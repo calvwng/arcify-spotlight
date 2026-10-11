@@ -7,6 +7,7 @@ import { vi } from 'vitest';
 
 // Private listener storage for runtime.onMessage
 let runtimeMessageListeners = [];
+let externalMessageListeners = [];
 
 export const chromeMock = {
   tabs: {
@@ -87,6 +88,16 @@ export const chromeMock = {
   },
 
   runtime: {
+    id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    openOptionsPage: vi.fn().mockResolvedValue(undefined),
+    onMessageExternal: {
+      addListener: vi.fn(callback => externalMessageListeners.push(callback)),
+      callListeners: (message, sender = {}, sendResponse = vi.fn()) => {
+        let asyncResponse = false;
+        for (const listener of externalMessageListeners) if (listener(message, sender, sendResponse) === true) asyncResponse = true;
+        return { asyncResponse, sendResponse };
+      }
+    },
     sendMessage: vi.fn().mockResolvedValue(undefined),
     onMessage: {
       addListener: vi.fn((callback) => {
@@ -124,6 +135,8 @@ export const chromeMock = {
   },
 
   windows: {
+    get: vi.fn().mockImplementation(async id => ({ id })),
+    getLastFocused: vi.fn().mockResolvedValue({ id: 1 }),
     update: vi.fn().mockResolvedValue({}),
     getCurrent: vi.fn().mockResolvedValue({ id: 1 })
   },
@@ -184,6 +197,9 @@ export function resetChromeMocks() {
 
   chromeMock.history.search.mockClear().mockResolvedValue([]);
 
+  chromeMock.runtime.openOptionsPage.mockClear();
+  chromeMock.runtime.onMessageExternal.addListener.mockClear();
+  externalMessageListeners = [];
   chromeMock.runtime.sendMessage.mockClear().mockResolvedValue(undefined);
   chromeMock.runtime.onInstalled.addListener.mockClear();
   chromeMock.runtime.onInstalled.removeListener.mockClear();
@@ -196,6 +212,8 @@ export function resetChromeMocks() {
   chromeMock.tabGroups.get.mockClear().mockResolvedValue({ color: 'grey', title: '' });
   chromeMock.tabGroups.query.mockClear().mockResolvedValue([]);
 
+  chromeMock.windows.get.mockClear().mockImplementation(async id => ({ id }));
+  chromeMock.windows.getLastFocused.mockClear().mockResolvedValue({ id: 1 });
   chromeMock.windows.update.mockClear().mockResolvedValue({});
   chromeMock.windows.getCurrent.mockClear().mockResolvedValue({ id: 1 });
 

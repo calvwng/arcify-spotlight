@@ -19,6 +19,7 @@ import { SpotlightMessageClient } from './shared/message-client.js';
 import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
+import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 
 /**
  * DORMANT CONTENT SCRIPT ARCHITECTURE
@@ -446,6 +447,8 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     // Get references to key elements
     const input = dialog.querySelector('.arcify-spotlight-input');
     const resultsContainer = dialog.querySelector('.arcify-spotlight-results');
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
+    let actionPending = false;
 
     // Initialize spotlight state
     let currentResults = [];
@@ -634,13 +637,16 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         try {
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
 
-            // Add immediate visual feedback - close spotlight immediately for faster perceived performance
-            closeSpotlight();
-
-            // Navigate in background
-            await handleResultActionViaMessage(result, mode);
+            if (actionPending) return;
+            actionPending = true;
+            // Keep errors visible and avoid repeated Enter/clicks while an action is pending.
+            const success = await handleResultActionViaMessage(result, mode);
+            if (success) closeSpotlight();
         } catch (error) {
             Logger.error('[Spotlight] Error in result action:', error);
+            bridgeStatus.showError(error.message);
+        } finally {
+            actionPending = false;
         }
     }
 
@@ -660,7 +666,11 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     );
 
     // Close spotlight function
+    let spotlightClosed = false;
     function closeSpotlight() {
+        if (spotlightClosed) return;
+        spotlightClosed = true;
+        bridgeStatus.dispose();
         dialog.close();
 
         SpotlightMessageClient.notifyClosed();

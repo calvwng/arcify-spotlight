@@ -1,0 +1,67 @@
+:root {
+    color-scheme: light dark;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #182233;
+    background: #f2f5fa;
+    line-height: 1.55;
+    font-size: 16px;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+.settings { width: min(100% - 40px, 720px); margin: 48px auto; }
+header { margin-bottom: 28px; }
+.eyebrow { margin: 0 0 6px; color: #4653b6; font-weight: 700; }
+h1 { margin: 0 0 10px; font-size: 2rem; line-height: 1.2; }
+h2 { margin: 0 0 16px; font-size: 1.2rem; }
+p { margin: 0 0 16px; }
+.card { margin: 20px 0; padding: 28px; border: 1px solid #dce2ec; border-radius: 16px; background: #fff; }
+.instructions { padding-left: 24px; margin: 0 0 20px; }
+.instructions li + li { margin-top: 10px; }
+label { display: block; font-weight: 650; margin-bottom: 8px; }
+.extension-id {
+    width: 100%;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid #a8b2c4;
+    border-radius: 8px;
+    background: #fff;
+    color: inherit;
+    font: 0.95rem ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.extension-id[readonly] { background: #f2f5fa; }
+.extension-id[aria-invalid="true"] { border-color: #a12626; }
+.hint { color: #566276; font-size: 0.9rem; margin: 8px 0 18px; }
+.card > .hint:last-child { margin-bottom: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+button { border: 1px solid #4653b6; border-radius: 8px; padding: 11px 16px; background: #4653b6; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+button.secondary { background: transparent; color: #3544a2; border-color: #a8b2c4; }
+button:hover:not(:disabled) { filter: brightness(0.92); }
+button:disabled, input:disabled { cursor: wait; opacity: 0.65; }
+button:focus-visible, input:focus-visible { outline: 3px solid #6489e5; outline-offset: 3px; }
+.connection-status { margin: 24px 0 16px; padding: 16px; border-radius: 8px; background: #edf1f7; border-left: 4px solid #6a768a; }
+.connection-status p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.connection-status[data-state="connected"] { background: #edf8f1; border-color: #21804e; }
+.connection-status[data-state="unavailable"] { background: #fff7e8; border-color: #a66c0a; }
+.connection-status[data-state="error"] { background: #fff1f1; border-color: #a12626; }
+
+@media (max-width: 480px) {
+    .settings { width: min(100% - 24px, 720px); margin: 24px auto; }
+    .card { padding: 20px; }
+    .extension-id { font-size: 0.8rem; }
+    .actions button { width: 100%; }
+}
+
+@media (prefers-color-scheme: dark) {
+    :root { color: #e5eaf4; background: #151925; }
+    .card { background: #202635; border-color: #394356; }
+    .eyebrow, button.secondary { color: #b2bcff; }
+    .hint { color: #b4bed0; }
+    .extension-id { background: #171c28; border-color: #6b7891; }
+    .extension-id[readonly] { background: #293143; }
+    .connection-status { background: #2b3447; }
+    .connection-status[data-state="connected"] { background: #1d3b2c; border-color: #71c797; }
+    .connection-status[data-state="unavailable"] { background: #43351f; border-color: #e9bc65; }
+    .connection-status[data-state="error"] { background: #492c32; border-color: #f18c94; }
+    .extension-id[aria-invalid="true"] { border-color: #f18c94; }
+}

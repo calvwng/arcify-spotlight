@@ -101,11 +101,11 @@ export class SpotlightUtils {
         }
     }
 
-    // Escape HTML utility (consolidated from overlay.js and popup.js)
+    // Escape both text and quoted HTML attributes; textContent serialization alone
+    // leaves quotes unescaped and is unsafe inside generated title attributes.
     static escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        return String(text ?? '').replace(/[&<>"']/g, character => entities[character]);
     }
 
     // Extract website name from URL for better display
@@ -167,6 +167,13 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        const owner = result.metadata?.arcifyBridge;
+        if (owner) {
+            const action = owner.kind === 'space' ? 'Switch Workspace'
+                : owner.kind === 'bookmark' ? 'Open Pinned Tab' : 'Switch to Tab';
+            return { title: result.title, subtitle: owner.kind === 'space' ? 'Arcify workspace' : result.domain, action };
+        }
+
         const formatters = {
             [ResultType.URL_SUGGESTION]: {
                 title: result.title,
@@ -338,18 +345,17 @@ export class SpotlightUtils {
         return chipColorMap[colorName] || chipColorMap.grey;
     }
 
-    // Generate space chip HTML -- only renders when tab is in a Chrome tab group
+    // Bridge results use authoritative workspace metadata, including closed pins.
+    // Standalone results keep the existing Chrome tab-group presentation.
     static generateSpaceChipHTML(result) {
         const groupName = result.metadata?.groupName;
         const spaceName = result.metadata?.spaceName;
+        const isBridge = Boolean(result.metadata?.arcifyBridge);
 
-        // No tab group = no chip (even if Arcify space exists)
-        if (!groupName) return '';
-
-        // If tab's group matches Arcify space, use Arcify name (canonical).
-        // If different or no Arcify space, use actual tab group name.
-        const chipName = (spaceName && spaceName === groupName) ? spaceName : groupName;
-        const chipColor = result.metadata?.groupColor || 'grey';
+        const chipName = isBridge ? spaceName
+            : (spaceName && spaceName === groupName) ? spaceName : groupName;
+        if (typeof chipName !== 'string' || !chipName) return '';
+        const chipColor = (isBridge ? result.metadata?.spaceColor : result.metadata?.groupColor) || 'grey';
         const chipColors = SpotlightUtils.getChipColors(chipColor);
         const truncatedName = chipName.length > 18 ? chipName.substring(0, 18) + '\u2026' : chipName;
 

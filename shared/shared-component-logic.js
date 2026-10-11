@@ -32,7 +32,7 @@ export class SharedSpotlightLogic {
 
         // Add async suggestions, filtering out duplicates of the instant suggestion
         for (const asyncResult of asyncSuggestions) {
-            const isDuplicate = instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
+            const isDuplicate = !asyncResult.metadata?.arcifyBridge && instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
             if (!isDuplicate) {
                 combined.push(asyncResult);
             }

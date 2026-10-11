@@ -4,6 +4,17 @@
 import { Logger } from '../logger.js';
 
 export class SpotlightMessageClient {
+    static errorListeners = new Set();
+
+    static onError(callback) {
+        this.errorListeners.add(callback);
+        return () => this.errorListeners.delete(callback);
+    }
+
+    static reportError(message) {
+        for (const listener of this.errorListeners) listener(message || 'The request could not be completed.');
+    }
+
     // Get suggestions from background script
     static async getSuggestions(query, mode) {
         try {
@@ -16,9 +27,11 @@ export class SpotlightMessageClient {
             const response = await chrome.runtime.sendMessage(message);
 
             if (response && response.success) {
+                if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {
                 Logger.error('[SpotlightMessageClient] Get suggestions failed:', response?.error);
+                this.reportError(response?.error);
                 return [];
             }
         } catch (error) {
@@ -36,9 +49,11 @@ export class SpotlightMessageClient {
                 mode: mode
             });
             if (response && response.success) {
+                if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {
                 Logger.error('[SpotlightMessageClient] Get local suggestions failed:', response?.error);
+                this.reportError(response?.error);
                 return [];
             }
         } catch (error) {
@@ -55,6 +70,7 @@ export class SpotlightMessageClient {
                 query: query.trim()
             });
             if (response && response.success) {
+                if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {
                 Logger.error('[SpotlightMessageClient] Get autocomplete suggestions failed:', response?.error);
@@ -68,6 +84,10 @@ export class SpotlightMessageClient {
 
     // Handle result action via message passing
     static async handleResult(result, mode) {
+        return (await this.handleResultDetailed(result, mode)).success;
+    }
+
+    static async handleResultDetailed(result, mode) {
         try {
             const message = {
                 action: 'spotlightHandleResult',
@@ -80,12 +100,14 @@ export class SpotlightMessageClient {
 
             if (!response || response.success === false) {
                 Logger.error('[SpotlightMessageClient] Result action failed:', response?.error || 'No response');
-                return false;
+                this.reportError(response?.error || 'The action was not confirmed. Check your tabs before trying again.');
+                return { success: false };
             }
-            return true;
+            return { ...response, success: true };
         } catch (error) {
             Logger.error('[SpotlightMessageClient] Error handling result action:', error);
-            return false;
+            this.reportError('The action was not confirmed. Check your tabs before trying again.');
+            return { success: false };
         }
     }
 

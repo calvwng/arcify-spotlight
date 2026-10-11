@@ -12,6 +12,8 @@ import { SpotlightMessageClient } from './shared/message-client.js';
 import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
+import { mountBridgeStatus } from './shared/bridge-status-ui.js';
+import { shouldCloseNewTab } from './shared/bridge-navigation-ui.js';
 
 // Initialize spotlight on page load
 // Initialize spotlight on page load
@@ -283,6 +285,8 @@ async function initializeSpotlight() {
     // Get references to key elements
     const input = container.querySelector('.arcify-spotlight-input');
     const resultsContainer = container.querySelector('.arcify-spotlight-results');
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
+    let actionPending = false;
 
     // Initialize spotlight state
     let currentResults = [];
@@ -299,7 +303,7 @@ async function initializeSpotlight() {
     // Handle result action via message passing
     // Use 'current-tab' mode so navigation happens in the current tab (the new tab page itself)
     async function handleResultActionViaMessage(result, mode) {
-        return await SpotlightMessageClient.handleResult(result, mode);
+        return await SpotlightMessageClient.handleResultDetailed(result, mode);
     }
 
     // Flag to track selection-driven input changes (should not trigger search)
@@ -449,16 +453,21 @@ async function initializeSpotlight() {
         try {
             // For tab results, use 'new-tab' mode to switch to existing tab
             // For other results, use 'current-tab' mode to navigate this page
-            const isTabSwitch = (result.type === 'open-tab' || result.type === 'pinned-tab');
+            if (actionPending) return;
+            actionPending = true;
+            const isTabSwitch = (result.type === 'open-tab' || result.type === 'pinned-tab' || Boolean(result.metadata?.arcifyBridge));
             const mode = isTabSwitch ? 'new-tab' : 'current-tab';
-            await handleResultActionViaMessage(result, mode);
+            const response = await handleResultActionViaMessage(result, mode);
 
             // Close this new tab page after switching to another tab
-            if (isTabSwitch) {
+            if (shouldCloseNewTab(result, response)) {
                 window.close();
             }
         } catch (error) {
             Logger.error('[NewTab Spotlight] Error in result action:', error);
+            bridgeStatus.showError(error.message);
+        } finally {
+            actionPending = false;
         }
     }
 

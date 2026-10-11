@@ -12,6 +12,10 @@ import { Logger } from './logger.js';
 import { getSettings } from './utils.js';
 import { arcifyProvider } from './shared/data-providers/arcify-provider.js';
 import { BookmarkUtils } from './bookmark-utils.js';
+import { arcifyBridge } from './shared/arcify-bridge.js';
+import { BRIDGE_TYPE, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
+import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
+import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -63,19 +67,128 @@ const SpotlightTabMode = {
 const backgroundDataProvider = new BackgroundDataProvider();
 const backgroundSearchEngine = new SearchEngine(backgroundDataProvider);
 
+// Context stays request-scoped: two windows may search at the same time.
+async function bridgeContext(message, sender) {
+    const tabId = sender.tab?.id ?? message.tabId;
+    if (Number.isSafeInteger(sender.tab?.windowId) && sender.tab.windowId > 0) {
+        return { tabId, windowId: sender.tab.windowId };
+    }
+    if (Number.isSafeInteger(tabId)) {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab?.windowId > 0) return { tabId: tab.id, windowId: tab.windowId };
+    }
+    // Extension pages without sender.tab may resolve their current window only.
+    if (sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''))) {
+        const window = await chrome.windows.getLastFocused();
+        const [tab] = await chrome.tabs.query({ active: true, windowId: window.id });
+        return { tabId: tab?.id, windowId: window.id };
+    }
+    throw new Error('Cannot identify this browser window. Reopen Spotlight and try again.');
+}
+
+async function searchEngineForSender(message, sender) {
+    const peerId = await arcifyBridge.getPeerId();
+    if (!peerId) return backgroundSearchEngine;
+    const context = await bridgeContext(message, sender);
+    const snapshot = await arcifyBridge.snapshot(context.windowId, peerId);
+    if (!snapshot) throw new Error('Arcify was disconnected. Search again.');
+    return new SearchEngine(new ArcifyBridgeProvider(snapshot, backgroundDataProvider, peerId));
+}
+
+function isNewTabSender(sender) {
+    return sender.id === chrome.runtime.id && sender.url?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html');
+}
+
+function isOptionsSender(sender) {
+    return sender.id === chrome.runtime.id && sender.url?.split(/[?#]/)[0] === chrome.runtime.getURL('options.html');
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!['arcifyBridgeStatus', 'arcifyBridgeConfigure', 'arcifyBridgeOpenSettings'].includes(message.action)) return false;
+    (async () => {
+        try {
+            if (message.action === 'arcifyBridgeOpenSettings') {
+                await chrome.runtime.openOptionsPage();
+                sendResponse({ success: true });
+                return;
+            }
+            if (message.action === 'arcifyBridgeConfigure') {
+                if (!isOptionsSender(sender)) throw new Error('Change the connection only from Spotlight settings.');
+                await arcifyBridge.configure(message.peerId);
+            }
+            if (!await arcifyBridge.getPeerId()) {
+                sendResponse({ success: true, status: await arcifyBridge.status() });
+                return;
+            }
+            const context = await bridgeContext(message, sender);
+            sendResponse({ success: true, status: await arcifyBridge.status(context.windowId) });
+        } catch (error) {
+            sendResponse({ success: false, error: error.message, errorCode: error.code });
+        }
+    })();
+    return true;
+});
+
+// All extensions may reach the manifest endpoint; only the paired ID may use it.
+const recentLaunches = new Map();
+const launchQueues = new Map();
+function pairedLaunch(message, peerId) {
+    const key = `${peerId}:${message.requestId}`;
+    const signature = JSON.stringify([message.windowId, message.mode]);
+    const existing = recentLaunches.get(key);
+    if (existing) {
+        if (existing.signature !== signature) throw Object.assign(new Error('Request ID was already used for another launch.'), { code: 'REQUEST_ID_REUSED' });
+        return existing.promise;
+    }
+    const previous = launchQueues.get(message.windowId) || Promise.resolve();
+    const promise = previous.catch(() => {}).then(async () => {
+        if (await arcifyBridge.getPeerId() !== peerId) throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
+        return injectSpotlightScript(message.mode, message.windowId);
+    });
+    launchQueues.set(message.windowId, promise);
+    recentLaunches.set(key, { signature, promise });
+    // Bounded lifetime-local replay guard, not a persistent browsing log.
+    if (recentLaunches.size > 100) recentLaunches.delete(recentLaunches.keys().next().value);
+    promise.finally(() => { if (launchQueues.get(message.windowId) === promise) launchQueues.delete(message.windowId); }).catch(() => {});
+    return promise;
+}
+
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+    if (message?.type !== BRIDGE_TYPE) return false;
+    (async () => {
+        try {
+            const peerId = await arcifyBridge.getPeerId();
+            if (!trustedSender(sender, peerId)) throw Object.assign(new Error('Pair this Arcify extension in Spotlight settings first.'), { code: 'UNAUTHORIZED' });
+            validateRequest(message, ['hello', 'launch']);
+            await chrome.windows.get(message.windowId);
+            if (message.command === 'launch') {
+                const opened = await pairedLaunch(message, peerId);
+                if (!opened) throw Object.assign(new Error('Spotlight is disabled or could not open.'), { code: 'LAUNCH_FAILED' });
+            }
+            sendResponse(responseFor(message, 'spotlight', { ok: true, extensionId: chrome.runtime.id }));
+        } catch (error) {
+            sendResponse(responseFor(message, 'spotlight', { ok: false, error: { code: error.code || 'FAILED', message: error.message } }));
+        }
+    })();
+    return true;
+});
+
+
 // Track tabs that have spotlight open for efficient closing
 const spotlightOpenTabs = new Set();
 
 // Close spotlight in tracked tabs only
-async function closeSpotlightInTrackedTabs() {
+async function closeSpotlightInTrackedTabs(windowId = null) {
     try {
-        const closePromises = Array.from(spotlightOpenTabs).map(tabId =>
+        const targetIds = windowId ? new Set((await chrome.tabs.query({ windowId })).map(tab => tab.id)) : null;
+        const closePromises = Array.from(spotlightOpenTabs).filter(id => !targetIds || targetIds.has(id)).map(tabId =>
             chrome.tabs.sendMessage(tabId, { action: 'closeSpotlight' }).catch(() => {
                 spotlightOpenTabs.delete(tabId);
             })
         );
         await Promise.all(closePromises);
-        spotlightOpenTabs.clear();
+        if (!targetIds) spotlightOpenTabs.clear();
+        else for (const id of targetIds) spotlightOpenTabs.delete(id);
     } catch (error) {
         Logger.error('[Background] Error closing spotlight in tracked tabs:', error);
     }
@@ -106,19 +219,20 @@ function supportsContentScripts(url) {
 }
 
 // Helper function to activate spotlight via content script messaging
-async function injectSpotlightScript(spotlightTabMode) {
+async function injectSpotlightScript(spotlightTabMode, windowId = null) {
     try {
         // Check if spotlight is enabled
         const settings = await getSettings();
         if (!settings.enableSpotlight) {
             Logger.log("Spotlight is disabled in settings.");
+            if (windowId) return false;
 
             if (spotlightTabMode === SpotlightTabMode.NEW_TAB) {
                 Logger.log("Opening default new tab instead of spotlight new tab.");
                 try {
-                    await chrome.tabs.create({ url: 'chrome://new-tab-page/' });
+                    await chrome.tabs.create({ url: 'chrome://new-tab-page/', ...(windowId ? { windowId } : {}) });
                 } catch (e) {
-                    await chrome.tabs.create({ url: 'chrome-search://local-ntp/local-ntp.html' });
+                    await chrome.tabs.create({ url: 'chrome-search://local-ntp/local-ntp.html', ...(windowId ? { windowId } : {}) });
                 }
             } else {
                 Logger.log("Aborting spotlight injection.");
@@ -127,15 +241,16 @@ async function injectSpotlightScript(spotlightTabMode) {
         }
 
         // First, close any existing spotlights in tracked tabs
-        await closeSpotlightInTrackedTabs();
+        await closeSpotlightInTrackedTabs(windowId);
 
         // Get the active tab
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [tab] = await chrome.tabs.query({ active: true, ...(windowId ? { windowId } : { currentWindow: true }) });
         if (tab) {
+            // Reuse an already-open Spotlight fallback rather than multiplying helper tabs.
+            if (tab.url?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html')) return true;
             if (!supportsContentScripts(tab.url)) {
                 Logger.log("Tab URL doesn't support content scripts, opening custom new tab directly:", tab.url);
-                await fallbackToChromeTabs(spotlightTabMode);
-                return;
+                return await fallbackToChromeTabs(spotlightTabMode, windowId);
             }
 
             try {
@@ -151,28 +266,29 @@ async function injectSpotlightScript(spotlightTabMode) {
                         action: 'spotlightOpened',
                         mode: spotlightTabMode
                     });
-                    return;
+                    return true;
                 }
+                return await fallbackToChromeTabs(spotlightTabMode, windowId);
             } catch (messageError) {
                 Logger.log("Content script messaging failed, using new tab fallback:", messageError);
-                await fallbackToChromeTabs(spotlightTabMode);
-                return;
+                return await fallbackToChromeTabs(spotlightTabMode, windowId);
             }
         }
     } catch (error) {
         Logger.log("All spotlight activation methods failed, using Chrome tab fallback:", error);
-        await fallbackToChromeTabs(spotlightTabMode);
+        return await fallbackToChromeTabs(spotlightTabMode, windowId);
     }
 }
 
 // Helper function for Chrome tab fallback when spotlight injection fails
-async function fallbackToChromeTabs(spotlightTabMode) {
+async function fallbackToChromeTabs(spotlightTabMode, windowId = null) {
     try {
-        await closeSpotlightInTrackedTabs();
+        await closeSpotlightInTrackedTabs(windowId);
 
         Logger.log(`Falling back to custom new tab page for mode: ${spotlightTabMode}`);
-        await chrome.tabs.create({ url: chrome.runtime.getURL('newtab.html'), active: true });
+        await chrome.tabs.create({ url: chrome.runtime.getURL('newtab.html'), active: true, ...(windowId ? { windowId } : {}) });
         Logger.log("Spotlight failed - opened custom new tab with spotlight interface");
+        return true;
 
     } catch (chromeTabError) {
         Logger.error("Error with Chrome tab fallback:", chromeTabError);
@@ -348,6 +464,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.action === 'getActiveSpaceColor') {
         (async () => {
             try {
+                if (await arcifyBridge.getPeerId()) {
+                    const context = await bridgeContext(message, sender);
+                    const snapshot = await arcifyBridge.snapshot(context.windowId);
+                    const activeSpace = snapshot.spaces.find(space => space.id === snapshot.activeSpaceId);
+                    sendResponse({ success: true, color: activeSpace?.color || 'purple', groupName: activeSpace?.name || null });
+                    return;
+                }
                 const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
                 // Check if tab exists and is in a group
@@ -394,10 +517,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 // The UI-layer debounce (150ms in SharedSpotlightLogic.createInputHandler) is the only debounce point.
                 // getSpotlightSuggestionsUsingCache() is retained in SearchEngine for backward compatibility
                 // but is no longer called from the main message handler path.
-                const results = await backgroundSearchEngine.getSpotlightSuggestionsImmediate(
+                const engine = await searchEngineForSender(message, sender);
+                const results = await engine.getSpotlightSuggestionsImmediate(
                     query, message.mode
                 );
-                sendResponse({ success: true, results: results });
+                sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
             } catch (error) {
                 Logger.error('[Background] Error getting spotlight suggestions:', error);
                 sendResponse({ success: false, error: error.message, results: [] });
@@ -408,10 +532,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         (async () => {
             try {
                 const query = message.query.trim();
-                const results = await backgroundSearchEngine.getLocalSuggestionsImmediate(
+                const engine = await searchEngineForSender(message, sender);
+                const results = await engine.getLocalSuggestionsImmediate(
                     query, message.mode
                 );
-                sendResponse({ success: true, results: results });
+                sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
             } catch (error) {
                 Logger.error('[Background] Error getting local suggestions:', error);
                 sendResponse({ success: false, error: error.message, results: [] });
@@ -440,7 +565,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
 
                 const tabId = (sender.tab && sender.tab.id) ? sender.tab.id : message.tabId;
-                await backgroundSearchEngine.handleResultAction(message.result, message.mode, tabId);
+                const peerId = await arcifyBridge.getPeerId();
+                if (!peerId && message.result.metadata?.arcifyBridge) throw new Error('Arcify was disconnected. Search again before selecting this result.');
+                if (peerId) {
+                    const context = await bridgeContext(message, sender);
+                    // The extension helper is a launcher, so new navigation belongs to Arcify's
+                    // newly active space rather than the helper's previous membership.
+                    const mode = isNewTabSender(sender) ? SpotlightTabMode.NEW_TAB : message.mode;
+                    const action = await handleBridgeResult(arcifyBridge, chrome, message.result, mode, context);
+                    if (!action?.handled) throw new Error('Arcify was disconnected before the action. Search again.');
+                    sendResponse({ success: true, bridge: true, command: action.command, tabId: action.tabId, sourceTabId: context.tabId });
+                    return;
+                } else {
+                    await backgroundSearchEngine.handleResultAction(message.result, message.mode, tabId);
+                }
                 sendResponse({ success: true });
             } catch (error) {
                 Logger.error('[Background] Error handling spotlight result:', error);
@@ -462,8 +600,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.action === 'activatePinnedTab') {
         // Forward pinned tab activation to Arcify extension if installed
         // This allows Spotlight to work with Arcify's pinned tabs
-        chrome.runtime.sendMessage(message);
-        sendResponse({ success: true });
+        sendResponse({ success: false, error: 'Use a fresh Spotlight result to activate an Arcify pin.' });
         return false;
     } else if (message.action === 'getArcifySpaceForUrl') {
         // Return Arcify space info for a URL - O(1) lookup via cached Map
