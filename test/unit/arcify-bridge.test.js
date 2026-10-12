@@ -157,6 +157,78 @@ describe('Arcify bridge pairing and transport', () => {
         expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
     });
 
+    it('reports a saved ID awaiting reciprocal approval, then connects after the peer approves it', async () => {
+        api.local[PEER_STORAGE_KEY] = '';
+        await client.configure(PEER_ID);
+        api.runtime.sendMessage.mockImplementationOnce((peer, request, callback) => {
+            callback(responseFor(request, 'arcify', { ok: false, error: { code: 'UNAUTHORIZED', message: 'This extension is not paired with Arcify.' } }));
+        });
+
+        expect(await client.status(WINDOW_ID)).toMatchObject({
+            configured: true, peerId: PEER_ID, status: 'pending',
+            message: expect.stringContaining('Arcify ID saved.')
+        });
+        expect(api.local[PEER_STORAGE_KEY]).toBe(PEER_ID);
+        expect(await client.status(WINDOW_ID)).toMatchObject({ configured: true, peerId: PEER_ID, status: 'connected' });
+        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: PEER_ID });
+        expect(api.runtime.sendMessage.mock.calls.map(([, request]) => request.command)).toEqual(['hello', 'hello']);
+    });
+
+    it('only treats a validated unauthorized reply as pending approval', async () => {
+        api.runtime.sendMessage.mockImplementation((peer, request, callback) => {
+            callback({ ...responseFor(request, 'spotlight', { ok: false, error: { code: 'UNAUTHORIZED', message: 'Not paired.' } }) });
+        });
+        expect(await client.status(WINDOW_ID)).toMatchObject({ configured: true, status: 'error' });
+        expect(api.storage.local.set).not.toHaveBeenCalled();
+    });
+
+    it('keeps unauthorized workspace requests rejected rather than treating pending approval as success', async () => {
+        api.runtime.sendMessage.mockImplementation((peer, request, callback) => {
+            callback(responseFor(request, 'arcify', { ok: false, error: { code: 'UNAUTHORIZED', message: 'Not paired.' } }));
+        });
+        await expect(client.snapshot(WINDOW_ID)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+        await expect(client.request('activateTab', WINDOW_ID, { tabId: 21 })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+        expect(api.storage.local.set).not.toHaveBeenCalled();
+    });
+
+    it('reports a timed-out status check as unavailable, not pending approval', async () => {
+        vi.useFakeTimers();
+        api.runtime.sendMessage.mockImplementation(() => {});
+        const status = client.status(WINDOW_ID);
+        await vi.advanceTimersByTimeAsync(51);
+        expect(await status).toMatchObject({ configured: true, peerId: PEER_ID, status: 'unavailable' });
+        expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+        expect(api.storage.local.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ['', false], ['', true], ['c'.repeat(32), false], ['c'.repeat(32), true]
+    ])('reports current pairing after an in-flight status response (replacement=%s, accepted=%s)', async (replacementId, accepted) => {
+        let request;
+        let callback;
+        let markStarted;
+        const started = new Promise(resolve => { markStarted = resolve; });
+        api.runtime.sendMessage.mockImplementation((peer, sent, reply) => {
+            request = sent;
+            callback = reply;
+            markStarted();
+        });
+        const pendingStatus = client.status(WINDOW_ID);
+        await started;
+        await client.configure(replacementId);
+        callback(responseFor(request, 'arcify', accepted
+            ? { ok: true, extensionId: PEER_ID, snapshot: snapshot() }
+            : { ok: false, error: { code: 'UNAUTHORIZED', message: 'Not paired.' } }));
+
+        expect(await pendingStatus).toMatchObject({
+            configured: !!replacementId, peerId: replacementId,
+            status: replacementId ? 'error' : 'disabled',
+            message: expect.stringContaining(replacementId ? 'pairing changed' : 'connection is off')
+        });
+        expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: replacementId });
+    });
+
     it('times out once without replaying a mutation and ignores its late callback', async () => {
         vi.useFakeTimers();
         let request;

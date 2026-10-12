@@ -32,6 +32,10 @@ label { display: block; font-weight: 650; margin-bottom: 8px; }
 .extension-id[readonly] { background: #f2f5fa; }
 .extension-id[aria-invalid="true"] { border-color: #a12626; }
 .hint { color: #566276; font-size: 0.9rem; margin: 8px 0 18px; }
+.saved-peer-id { overflow-wrap: anywhere; }
+.copy-id-row { display: flex; align-items: stretch; gap: 10px; }
+.copy-id-row button { flex-shrink: 0; }
+#copy-id-message:empty { display: none; }
 .card > .hint:last-child { margin-bottom: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
 button { border: 1px solid #4653b6; border-radius: 8px; padding: 11px 16px; background: #4653b6; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
@@ -42,6 +46,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #6489e5; outline-
 .connection-status { margin: 24px 0 16px; padding: 16px; border-radius: 8px; background: #edf1f7; border-left: 4px solid #6a768a; }
 .connection-status p { margin: 4px 0 0; overflow-wrap: anywhere; }
 .connection-status[data-state="connected"] { background: #edf8f1; border-color: #21804e; }
+.connection-status[data-state="pending"] { background: #eef2ff; border-color: #4653b6; }
 .connection-status[data-state="unavailable"] { background: #fff7e8; border-color: #a66c0a; }
 .connection-status[data-state="error"] { background: #fff1f1; border-color: #a12626; }
 
@@ -49,6 +54,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #6489e5; outline-
     .settings { width: min(100% - 24px, 720px); margin: 24px auto; }
     .card { padding: 20px; }
     .extension-id { font-size: 0.8rem; }
+    .copy-id-row { flex-direction: column; }
     .actions button { width: 100%; }
 }
 
@@ -61,6 +67,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #6489e5; outline-
     .extension-id[readonly] { background: #293143; }
     .connection-status { background: #2b3447; }
     .connection-status[data-state="connected"] { background: #1d3b2c; border-color: #71c797; }
+    .connection-status[data-state="pending"] { background: #2b3152; border-color: #b2bcff; }
     .connection-status[data-state="unavailable"] { background: #43351f; border-color: #e9bc65; }
     .connection-status[data-state="error"] { background: #492c32; border-color: #f18c94; }
     .extension-id[aria-invalid="true"] { border-color: #f18c94; }

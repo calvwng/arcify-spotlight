@@ -148,6 +148,22 @@ describe('Spotlight background bridge seams', () => {
         expect(response).toMatchObject({ success: true, status: { configured: false, status: 'disabled' } });
         expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: '' });
     });
+    it('saves from options before reciprocal approval and connects on a later read-only refresh', async () => {
+        const optionsSender = { id: ownId, url: chromeMock.runtime.getURL('options.html') };
+        let storedId = '';
+        chromeMock.storage.local.get.mockImplementation(async key => key === 'arcifyBridgePeerId' ? { arcifyBridgePeerId: storedId } : {});
+        chromeMock.storage.local.set.mockImplementation(async ({ arcifyBridgePeerId }) => { storedId = arcifyBridgePeerId; });
+        chromeMock.runtime.sendMessage.mockImplementationOnce((id, request, callback) => callback(respond(request, {
+            ok: false, error: { code: 'UNAUTHORIZED', message: 'This extension is not paired with Arcify.' }
+        })));
+
+        const saved = await callInternal({ action: 'arcifyBridgeConfigure', peerId }, optionsSender);
+        expect(saved).toMatchObject({ success: true, status: { configured: true, peerId, status: 'pending' } });
+        expect(storedId).toBe(peerId);
+        const refreshed = await callInternal({ action: 'arcifyBridgeStatus' }, optionsSender);
+        expect(refreshed).toMatchObject({ success: true, status: { configured: true, peerId, status: 'connected' } });
+        expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: peerId });
+    });
 });
 
 describe('paired reverse launch', () => {

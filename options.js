@@ -1,6 +1,7 @@
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const STATUS_LABELS = {
     disabled: 'Disabled',
+    pending: 'Awaiting Arcify approval',
     connected: 'Connected',
     unavailable: 'Unavailable',
     error: 'Connection error'
@@ -13,13 +14,17 @@ const STATUS_LABELS = {
  */
 export function initializeBridgeOptions({
     document = globalThis.document,
-    runtime = globalThis.chrome?.runtime
+    runtime = globalThis.chrome?.runtime,
+    clipboard = globalThis.navigator?.clipboard
 } = {}) {
     const form = document.getElementById('bridge-settings-form');
     if (!form) return null;
 
     const ownId = document.getElementById('spotlight-extension-id');
+    const copyButton = document.getElementById('copy-spotlight-id');
+    const copyMessage = document.getElementById('copy-id-message');
     const peerId = document.getElementById('arcify-peer-id');
+    const savedPeerId = document.getElementById('saved-peer-id');
     const disconnectButton = document.getElementById('disconnect-connection');
     const refreshButton = document.getElementById('refresh-connection');
     const statusRegion = document.getElementById('connection-status');
@@ -30,6 +35,23 @@ export function initializeBridgeOptions({
     let dirty = false;
 
     ownId.value = runtime?.id || 'Unavailable outside the extension';
+    copyButton.disabled = !EXTENSION_ID_PATTERN.test(runtime?.id || '');
+
+    async function copyOwnId() {
+        if (copyButton.disabled) return;
+        copyButton.disabled = true;
+        try {
+            if (!clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await clipboard.writeText(runtime.id);
+            copyMessage.textContent = 'Copied. Paste this ID into Arcify’s connection settings and save it.';
+        } catch {
+            ownId.focus();
+            ownId.select();
+            copyMessage.textContent = 'Copy the selected ID (Ctrl+C or ⌘C), then paste it into Arcify’s connection settings and save it.';
+        } finally {
+            copyButton.disabled = false;
+        }
+    }
 
     function showStatus(state, message) {
         statusRegion.dataset.state = state;
@@ -66,6 +88,11 @@ export function initializeBridgeOptions({
                 dirty = false;
                 peerId.removeAttribute('aria-invalid');
             }
+            savedPeerId.textContent = !status.configured
+                ? 'No Arcify ID saved. Save it here to start pairing.'
+                : EXTENSION_ID_PATTERN.test(status.peerId)
+                    ? `Saved Arcify ID: ${status.peerId}`
+                    : 'The saved Arcify ID needs to be corrected.';
             showStatus(status.status, status.message);
         } catch (error) {
             showStatus('error', error instanceof Error ? error.message : 'The connection check failed. Try again.');
@@ -105,9 +132,10 @@ export function initializeBridgeOptions({
     form.addEventListener('submit', save);
     disconnectButton.addEventListener('click', disconnect);
     refreshButton.addEventListener('click', refresh);
+    copyButton.addEventListener('click', copyOwnId);
 
     const ready = refresh();
-    return { ready, refresh, save, disconnect };
+    return { ready, refresh, save, disconnect, copyOwnId };
 }
 
 if (globalThis.document?.getElementById('bridge-settings-form')) {

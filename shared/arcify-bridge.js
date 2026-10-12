@@ -148,6 +148,24 @@ export class ArcifyBridgeClient {
             const warningText = warnings.length ? ` Some pinned bookmarks are unavailable. ${warnings.map(warning => warning.message).join(' ')}` : '';
             return { configured: true, peerId, status: 'connected', warnings, message: 'Connected to Arcify. Workspace changes are managed by Arcify.' + warningText };
         } catch (error) {
+            // Another options tab can change pairing while the check is in flight.
+            // Report the currently saved ID without retrying the old or new peer.
+            try {
+                const savedPeerId = await this.getPeerId() || '';
+                if (savedPeerId !== peerId) {
+                    return { configured: !!savedPeerId, peerId: savedPeerId, status: savedPeerId ? 'error' : 'disabled', message: savedPeerId
+                        ? 'Arcify pairing changed during the check. Refresh status to check the saved ID.'
+                        : 'Arcify connection is off. Spotlight works on its own.' };
+                }
+            } catch (configurationError) {
+                return { configured: true, peerId: '', status: 'error', message: configurationError.message };
+            }
+            // Saving an ID and completing the reciprocal pairing are separate steps.
+            // This is only a local status label; the peer still rejects all requests
+            // until its own explicitly configured ID matches this extension.
+            if (error.code === 'UNAUTHORIZED') {
+                return { configured: true, peerId, status: 'pending', message: 'Arcify ID saved. To finish pairing, copy Spotlight’s ID from Connection settings into Arcify’s connection settings and save it, then refresh status.' };
+            }
             return { configured: true, peerId, status: error.code === 'UNAVAILABLE' || error.code === 'TIMEOUT' ? 'unavailable' : 'error', message: error.message };
         }
     }

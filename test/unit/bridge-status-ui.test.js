@@ -63,6 +63,7 @@ describe('Shared Arcify bridge status surface', () => {
     it.each([
         ['disabled', 'Ignored disabled detail.', 'Standalone Spotlight'],
         ['connected', 'Arcify is connected.', 'Arcify is connected.'],
+        ['pending', 'Arcify ID saved. Save Spotlight’s ID in Arcify, then refresh status.', 'Arcify ID saved. Save Spotlight’s ID in Arcify, then refresh status.'],
         ['unavailable', 'Reload Arcify to reconnect.', 'Reload Arcify to reconnect.'],
         ['error', 'The paired ID is invalid.', 'The paired ID is invalid.']
     ])('renders %s connection state', async (state, message, expected) => {

@@ -43,6 +43,7 @@ describe('Arcify bridge options', () => {
         expect(document.getElementById('spotlight-extension-id').value).toBe(OWN_ID);
         expect(runtime.sendMessage).toHaveBeenCalledExactlyOnceWith({ action: 'arcifyBridgeStatus' });
         expect(peerInput.value).toBe('');
+        expect(document.getElementById('saved-peer-id').textContent).toContain('No Arcify ID saved.');
         expect(status.dataset.state).toBe('disabled');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
@@ -57,6 +58,84 @@ describe('Arcify bridge options', () => {
         expect(peerInput.value).toBe(PEER_ID);
         expect(status.dataset.state).toBe('connected');
         expect(status.textContent).toContain('Arcify is connected.');
+        expect(document.getElementById('saved-peer-id').textContent).toBe(`Saved Arcify ID: ${PEER_ID}`);
+    });
+
+    it('keeps a saved peer while awaiting reciprocal approval, then connects on refresh without another save', async () => {
+        const options = initializeBridgeOptions({ document, runtime });
+        await options.ready;
+        editPeerId(PEER_ID);
+        runtime.sendMessage.mockResolvedValueOnce(response('pending', PEER_ID, 'Arcify ID saved. Save Spotlight’s ID in Arcify, then refresh status.'));
+        await options.save();
+
+        expect(status.dataset.state).toBe('pending');
+        expect(document.getElementById('connection-status-label').textContent).toBe('Awaiting Arcify approval');
+        expect(document.getElementById('saved-peer-id').textContent).toBe(`Saved Arcify ID: ${PEER_ID}`);
+        expect(peerInput.value).toBe(PEER_ID);
+        expect(peerInput.disabled).toBe(false);
+        runtime.sendMessage.mockResolvedValueOnce(response('connected', PEER_ID, 'Connected to Arcify.'));
+        await options.refresh();
+
+        expect(status.dataset.state).toBe('connected');
+        expect(runtime.sendMessage.mock.calls.map(([message]) => message.action)).toEqual([
+            'arcifyBridgeStatus', 'arcifyBridgeConfigure', 'arcifyBridgeStatus'
+        ]);
+    });
+
+    it('keeps local save confirmation separate from an unavailable connection', async () => {
+        const options = initializeBridgeOptions({ document, runtime });
+        await options.ready;
+        editPeerId(PEER_ID);
+        runtime.sendMessage.mockResolvedValueOnce(response('unavailable', PEER_ID, 'Companion unavailable.'));
+        await options.save();
+
+        expect(status.dataset.state).toBe('unavailable');
+        expect(document.getElementById('connection-status-label').textContent).toBe('Unavailable');
+        expect(document.getElementById('saved-peer-id').textContent).toBe(`Saved Arcify ID: ${PEER_ID}`);
+    });
+
+    it('copies this installation’s Spotlight ID without sending a bridge request', async () => {
+        const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+        const options = initializeBridgeOptions({ document, runtime, clipboard });
+        await options.ready;
+        document.getElementById('copy-spotlight-id').click();
+        await vi.waitFor(() => expect(document.getElementById('copy-id-message').textContent).toContain('Copied.'));
+
+        expect(clipboard.writeText).toHaveBeenCalledExactlyOnceWith(OWN_ID);
+        expect(runtime.sendMessage).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('copy-spotlight-id').disabled).toBe(false);
+        expect(status.dataset.state).toBe('disabled');
+    });
+
+    it.each(['missing', 'denied'])('selects the ID for manual copying when clipboard access is %s', async (condition) => {
+        const clipboard = condition === 'missing' ? null : { writeText: vi.fn().mockRejectedValue(new Error('Permission denied')) };
+        const options = initializeBridgeOptions({ document, runtime, clipboard });
+        await options.ready;
+        await options.copyOwnId();
+
+        const ownInput = document.getElementById('spotlight-extension-id');
+        expect(document.activeElement).toBe(ownInput);
+        expect(ownInput.selectionStart).toBe(0);
+        expect(ownInput.selectionEnd).toBe(OWN_ID.length);
+        expect(document.getElementById('copy-id-message').textContent).toContain('Copy the selected ID');
+        expect(document.getElementById('copy-spotlight-id').disabled).toBe(false);
+        expect(status.dataset.state).toBe('disabled');
+        expect(runtime.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores repeated copy actions until the first clipboard request completes', async () => {
+        let complete;
+        const clipboard = { writeText: vi.fn(() => new Promise(resolve => { complete = resolve; })) };
+        const options = initializeBridgeOptions({ document, runtime, clipboard });
+        await options.ready;
+        const copying = options.copyOwnId();
+        await options.copyOwnId();
+        expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+        complete();
+        await copying;
+        clipboard.writeText.mockResolvedValue(undefined);
+        await options.copyOwnId();
+        expect(clipboard.writeText).toHaveBeenCalledTimes(2);
     });
 
     it.each(['abc', 'q'.repeat(32), 'B'.repeat(32), 'b'.repeat(31), 'b'.repeat(33)])(
@@ -119,13 +198,16 @@ describe('Arcify bridge options', () => {
     });
 
     it('refreshes status without overwriting an unsaved peer ID', async () => {
+        runtime.sendMessage.mockResolvedValue(response('pending', PEER_ID, 'Awaiting Arcify approval.'));
         const options = initializeBridgeOptions({ document, runtime });
         await options.ready;
-        editPeerId(PEER_ID);
+        const replacementId = 'c'.repeat(32);
+        editPeerId(replacementId);
         await options.refresh();
 
         expect(runtime.sendMessage).toHaveBeenLastCalledWith({ action: 'arcifyBridgeStatus' });
-        expect(peerInput.value).toBe(PEER_ID);
+        expect(peerInput.value).toBe(replacementId);
+        expect(document.getElementById('saved-peer-id').textContent).toBe(`Saved Arcify ID: ${PEER_ID}`);
     });
 
     it('wires form submission, refresh, and disconnect controls', async () => {
@@ -163,7 +245,7 @@ describe('Arcify bridge options', () => {
         expect([...form.querySelectorAll('button, input')].every(control => !control.disabled)).toBe(true);
     });
 
-    it.each(['unavailable', 'error'])(
+    it.each(['pending', 'unavailable', 'error'])(
         'shows %s status and renders peer-provided text safely', async (state) => {
             const message = '<img src=x onerror="alert(1)"><script>alert(1)</script>';
             runtime.sendMessage.mockResolvedValue(response(state, PEER_ID, message));
@@ -215,9 +297,13 @@ describe('Arcify bridge options', () => {
     );
 
     it('explains how to open the page if the runtime is unavailable', async () => {
-        const options = initializeBridgeOptions({ document, runtime: null });
+        const clipboard = { writeText: vi.fn() };
+        const options = initializeBridgeOptions({ document, runtime: null, clipboard });
         await options.ready;
 
         expect(status.textContent).toContain('Open this page from Arcify Spotlight’s extension settings.');
+        expect(document.getElementById('copy-spotlight-id').disabled).toBe(true);
+        await options.copyOwnId();
+        expect(clipboard.writeText).not.toHaveBeenCalled();
     });
 });
