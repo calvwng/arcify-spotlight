@@ -35,12 +35,28 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
             (result.type === ResultType.AUTOCOMPLETE_SUGGESTION && !result.metadata?.isUrl)) {
             const query = result.metadata?.query;
             if (typeof query !== 'string' || !query.trim()) throw new ArcifyBridgeError('INVALID_QUERY', 'Search text is missing.');
-            const response = mode === SpotlightTabMode.NEW_TAB
-                ? await bridge.request('openTab', windowId, { url: 'about:blank' }, peerId)
-                : await bridge.request('navigateTab', windowId, { tabId, url: 'about:blank' }, peerId);
-            if (!Number.isSafeInteger(response?.tabId)) throw new ArcifyBridgeError('INVALID_RESPONSE', 'Arcify did not identify the search tab.');
-            await api.search.query({ text: query, tabId: response.tabId });
-            return { handled: true, command: 'search', tabId: response.tabId };
+            let searchTabId;
+            if (mode === SpotlightTabMode.NEW_TAB) {
+                const response = await bridge.request('openTab', windowId, { url: 'about:blank' }, peerId);
+                if (!Number.isSafeInteger(response?.tabId)) throw new ArcifyBridgeError('INVALID_RESPONSE', 'Arcify did not identify the search tab.');
+                searchTabId = response.tabId;
+            } else {
+                // The fresh, authenticated Arcify snapshot above authorizes this
+                // exact source tab. Do not blank the page while awaiting a bridge
+                // round trip: a timeout must leave it intact with its error UI.
+                if (!snapshot.tabs.some(tab => tab.id === tabId && tab.windowId === windowId)) {
+                    throw new ArcifyBridgeError('STALE_TAB', 'The current tab is no longer in this window. Search again.');
+                }
+                let current;
+                try { current = await api.tabs.get(tabId); }
+                catch { throw new ArcifyBridgeError('STALE_TAB', 'The current tab closed. Search again.'); }
+                if (current.windowId !== windowId) throw new ArcifyBridgeError('WRONG_WINDOW', 'The current tab moved to another window. Search again.');
+                searchTabId = tabId;
+            }
+            if (await bridge.getPeerId() !== peerId) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify pairing changed before the search. Search again.');
+            // One final navigation, using Spotlight's existing search permission.
+            await api.search.query({ text: query, tabId: searchTabId });
+            return { handled: true, command: 'search', tabId: searchTabId };
         } else {
             if (typeof result.url !== 'string' || !result.url) throw new ArcifyBridgeError('INVALID_URL', 'The selected result has no URL.');
             command = mode === SpotlightTabMode.NEW_TAB ? 'openTab' : 'navigateTab';

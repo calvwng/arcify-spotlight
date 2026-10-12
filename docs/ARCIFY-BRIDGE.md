@@ -8,12 +8,11 @@ it never writes a snapshot into its own `spaces` storage or replaces Arcify stat
 Chrome tab-group sync is optional and is not the bridge's source of identity.
 
 Companion: [Arcify draft PR #75](https://github.com/calvwng/arcify/pull/75).
-The latest tested runtime pair for this guide is Arcify
-[`5f8febd`](https://github.com/calvwng/arcify/commit/5f8febd100e21b06142c1fd8dd91d975d02f1d9f)
-and Spotlight
-[`5eedd346`](https://github.com/calvwng/arcify-spotlight/commit/5eedd3463580013ec03e88e23bac17b475770e5b).
-Later documentation-only commits do not change that runtime pair or require a
-rebuild. See the [Arcify-side guide](https://github.com/calvwng/arcify/blob/5f8febd100e21b06142c1fd8dd91d975d02f1d9f/docs/spotlight-bridge.md)
+Current matching runtime revisions and exact-head checks are recorded in
+[Spotlight draft PR #1](https://github.com/calvwng/arcify-spotlight/pull/1) and the
+companion PR. The four-finding regression fixes retain protocol v1; update both
+runtime builds to obtain all fixes. Documentation-only commits do not require a
+rebuild. See the [Arcify-side guide](https://github.com/calvwng/arcify/blob/integration/arcify-bridge-v1/docs/spotlight-bridge.md)
 for its storage model, and the [deferred backlog](BACKLOG.md) for bookmark-only ideas.
 
 ## Load, pair, and update
@@ -23,7 +22,7 @@ Avoid two active Arcify copies in one profile: they share the Arcify bookmark
 folder namespace. Avoid competing new-tab overrides during validation.
 
 1. Check out `integration/arcify-bridge-v1` in the `calvwng/arcify` and
-   `calvwng/arcify-spotlight` forks, or use the exact paired revisions above.
+   `calvwng/arcify-spotlight` forks, or use the exact paired revisions recorded in their PRs.
    Build each with `npm ci` and `npm run build` using Node 22 or 24.
    `PUPPETEER_SKIP_DOWNLOAD=1 npm ci` suffices for builds/unit tests; browser tests
    need their documented browser setup.
@@ -75,7 +74,10 @@ neither a rebuild nor a change to Arcify's pinned companion runtime revision.
   after a confirmed result targets a different tab; empty-space selection keeps it.
 - **Launch from the sidebar:** Arcify's separate **Search with Spotlight** button
   targets that sidebar's window. Unsupported pages use Spotlight's helper page;
-  an already-active helper is reused. The original Arcify New Tab button is unchanged.
+  an already-active helper is reused. Bridge launch explicitly ensures the overlay
+  is open, including during pending close animation or after worker restart; it is
+  not a toggle. Normal Spotlight shortcuts retain their toggle behavior. The
+  original Arcify New Tab button is unchanged.
 - **Use group sync off:** All the above use Arcify's model, not group names/IDs.
   Optional native groups remain Arcify's projection when sync is enabled.
 
@@ -126,8 +128,12 @@ workspace action routing. It would complement pairing rather than replace it.
 4. On selection, Spotlight refreshes state and sends a specific action. Arcify
    serializes it with native tab events/sidebar writes through its SpaceStore queue,
    rechecks current membership, and performs existing Arcify operations. Default-
-   engine searches use an Arcify-managed target tab followed by Spotlight's existing
-   `chrome.search` call.
+   engine searches in new-tab mode create an Arcify-managed blank target before
+   Spotlight's existing `chrome.search` call. In current-tab mode, the fresh
+   authenticated snapshot validates the exact source tab; Spotlight also checks
+   the live tab/window and saved peer immediately before its final `chrome.search`
+   navigation. It does not first navigate the existing page to `about:blank`, so a
+   snapshot timeout leaves that page and its error UI intact.
 
 ### Protocol v1 reference
 
@@ -220,7 +226,8 @@ Arcify checkout, `node scripts/check-spotlight-pair.mjs ../arcify-spotlight` com
 protocol copies and exercises actual client/server modules with mocked Chrome APIs.
 These checks do not load the pair into a real browser.
 
-At the tested runtime revisions above:
+Historical checks before the four-finding fixes (Arcify `5f8febd`, Spotlight
+`5eedd346`; later docs-only head `a5f28ee` shares that runtime):
 
 - Spotlight: **894 tests / 32 files**, production build and [CI coverage run](https://github.com/calvwng/arcify-spotlight/actions/runs/38214051593) passed.
 - Arcify: 188 unit passes / 1 explicit baseline skip, build, 12 Arcify-only browser
@@ -231,15 +238,17 @@ At the tested runtime revisions above:
   1 preflight failure, 13 not run, 0 screenshots. No security protections were relaxed.
   The managed cloud browser separately blocks unpacked installation by policy.
 - The user reported a successful Helium handshake after saving both reciprocal IDs.
-  Updated builds are prepared locally, but revised UI/clipboard interaction and the
-  full paired matrix are still pending manual acceptance. This observation is not
+  Updated runtime builds require reload and renewed manual acceptance. Revised
+  UI/clipboard interaction and the full paired matrix are still pending. This observation is not
   comprehensive Helium compatibility or real-Chrome paired test evidence.
 
 See the [full acceptance matrix and baseline caveats](https://github.com/calvwng/arcify/blob/5f8febd100e21b06142c1fd8dd91d975d02f1d9f/docs/bridge-validation.md)
 for multiwindow identity, group sync off/on, native sidebar, physical shortcuts/focus,
 worker reload, and complete browser-session restoration checks. Read exact-head CI
 results in [Spotlight PR #1](https://github.com/calvwng/arcify-spotlight/pull/1) for
-subsequent documentation-only revisions.
+subsequent runtime and documentation revisions. The review-fix regression tests
+exercise actual refresh/overlay/client modules with mocked Chrome and DOM APIs;
+those tests remain separate from real paired-browser acceptance.
 
 Unchanged upstream Spotlight built successfully but had 689 passing tests and seven
 external autocomplete timeouts. A test-only autocomplete stub made the affected

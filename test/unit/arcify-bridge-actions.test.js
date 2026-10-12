@@ -3,7 +3,7 @@ import { handleBridgeResult } from '../../shared/arcify-bridge-actions.js';
 
 const peerId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const context = { windowId: 2, tabId: 20 };
-const snapshot = { windowId: 2, tabs: [{ id: 20 }, { id: 21 }], spaces: [] };
+const snapshot = { windowId: 2, tabs: [{ id: 20, windowId: 2 }, { id: 21, windowId: 2 }], spaces: [] };
 let bridge;
 let api;
 beforeEach(() => {
@@ -11,7 +11,7 @@ beforeEach(() => {
         getPeerId: vi.fn().mockResolvedValue(peerId), snapshot: vi.fn().mockResolvedValue(snapshot),
         request: vi.fn().mockResolvedValue({ tabId: 25 }), serializeAction: callback => callback()
     };
-    api = { search: { query: vi.fn().mockResolvedValue(undefined) }, tabs: { create: vi.fn(), update: vi.fn() } };
+    api = { search: { query: vi.fn().mockResolvedValue(undefined) }, tabs: { get: vi.fn().mockResolvedValue({ id: 20, windowId: 2 }), create: vi.fn(), update: vi.fn() } };
 });
 const owned = (kind, values = {}) => ({ type: 'bookmark', url: 'https://example.com', metadata: { arcifyBridge: { kind, peerId, windowId: 2, spaceId: 'work', ...values } } });
 
@@ -52,9 +52,13 @@ describe('authoritative Arcify action routing', () => {
         expect(bridge.request).toHaveBeenCalledExactlyOnceWith('openTab', 2, { url: 'about:blank' }, peerId);
         expect(api.search.query).toHaveBeenCalledExactlyOnceWith({ text: 'hello world', tabId: 25 });
     });
-    it('searches the current caller tab through Arcify first', async () => {
+    it('validates current-tab search against fresh Arcify state without blanking the page', async () => {
         await handleBridgeResult(bridge, api, { type: 'search-query', metadata: { query: 'hello' } }, 'current-tab', context);
-        expect(bridge.request).toHaveBeenCalledExactlyOnceWith('navigateTab', 2, { tabId: 20, url: 'about:blank' }, peerId);
+        expect(bridge.snapshot).toHaveBeenCalledExactlyOnceWith(2, peerId);
+        expect(api.tabs.get).toHaveBeenCalledExactlyOnceWith(20);
+        expect(bridge.request).not.toHaveBeenCalled();
+        expect(api.tabs.update).not.toHaveBeenCalled();
+        expect(api.search.query).toHaveBeenCalledExactlyOnceWith({ text: 'hello', tabId: 20 });
     });
     it('rejects a stale tab result rather than creating a duplicate', async () => {
         await expect(handleBridgeResult(bridge, api, owned('tab', { tabId: 99 }), 'new-tab', context)).rejects.toMatchObject({ code: 'STALE_RESULT' });

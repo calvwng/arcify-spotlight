@@ -42,15 +42,13 @@ import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 if (!window.arcifySpotlightTabMode) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.action === 'activateSpotlight') {
-            // Set up activation variables exactly like legacy background script injection
-            // These variables are used throughout the spotlight code for context
-            window.arcifySpotlightTabMode = message.mode;
-            window.arcifyCurrentTabUrl = message.tabUrl;
-            window.arcifyCurrentTabId = message.tabId;
-
-            // Instantly activate spotlight (no injection delay!)
-            activateSpotlight(message.mode);
-            sendResponse({ success: true });
+            // Acknowledge only once the real dialog has opened (or intentionally
+            // toggled closed). Concurrent requests share a serialized lifecycle.
+            activateSpotlight(message.mode, message).then(
+                state => sendResponse({ success: true, ...state }),
+                error => sendResponse({ success: false, error: error.message })
+            );
+            return true;
         }
     });
 }
@@ -73,40 +71,37 @@ if (!window.arcifySpotlightTabMode) {
 const SPOTLIGHT_HOST_ID = 'arcify-spotlight-host';
 const SPOTLIGHT_DIALOG_ID = 'arcify-spotlight-dialog';
 
-function getExistingSpotlightDialog() {
-    const host = document.getElementById(SPOTLIGHT_HOST_ID);
-    return host && host.shadowRoot
-        ? host.shadowRoot.getElementById(SPOTLIGHT_DIALOG_ID)
-        : null;
+let activeOverlay = null;
+let activationQueue = Promise.resolve();
+
+function activateSpotlight(spotlightTabMode = 'current-tab', options = {}) {
+    const activation = activationQueue.catch(() => {}).then(() => activateSpotlightNow(spotlightTabMode, options));
+    activationQueue = activation;
+    return activation;
 }
 
-// Main spotlight activation function
-async function activateSpotlight(spotlightTabMode = 'current-tab') {
+// Main spotlight activation function. Bridge launches ensure visibility; shortcuts toggle.
+async function activateSpotlightNow(spotlightTabMode, options) {
+    window.arcifySpotlightTabMode = spotlightTabMode;
+    if ('tabUrl' in options) window.arcifyCurrentTabUrl = options.tabUrl;
+    if ('tabId' in options) window.arcifyCurrentTabId = options.tabId;
 
-    // Handle toggle functionality for existing spotlight
-    // (must find the dialog through the host -- a miss here would build a second overlay)
-    const existingDialog = getExistingSpotlightDialog();
-    if (existingDialog) {
-        if (existingDialog.open) {
-            existingDialog.close();
-        } else {
-            existingDialog.showModal();
-
-            // Notify background that spotlight opened in this tab
-            SpotlightMessageClient.notifyOpened();
-
-            const input = existingDialog.querySelector('.arcify-spotlight-input');
-            if (input) {
-                input.focus();
-                input.select();
-                input.scrollLeft = 0;
-            }
+    if (activeOverlay && !activeOverlay.host.isConnected) activeOverlay.dispose();
+    if (activeOverlay) {
+        if (activeOverlay.dialog.open && !options.ensureOpen) {
+            activeOverlay.close();
+            return { open: false };
         }
-        return;
+        if (activeOverlay.dialog.open && activeOverlay.mode === spotlightTabMode) {
+            activeOverlay.focus();
+            SpotlightMessageClient.notifyOpened();
+            return { open: true };
+        }
+        // A closed instance has already disposed its status/listeners. Replace it,
+        // canceling its removal timer, rather than reviving an incomplete dialog.
+        // Rebuild for mode changes too, so search and action closures use the new mode.
+        activeOverlay.dispose();
     }
-
-    // Mark as injected only when creating new dialog
-    window.arcifySpotlightInjected = true;
 
     // Start with default color - will update asynchronously
     let activeSpaceColor = 'purple'; // Default fallback
@@ -449,6 +444,9 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     const resultsContainer = dialog.querySelector('.arcify-spotlight-results');
     const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
     let actionPending = false;
+    let spotlightClosed = false;
+    let removalTimer = null;
+    let prefillTimer = null;
 
     // Initialize spotlight state
     let currentResults = [];
@@ -490,15 +488,18 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
 
     // Load initial results
     async function loadInitialResults() {
+        if (spotlightClosed) return;
         try {
             // Clear instant suggestion when loading initial results
             instantSuggestion = null;
 
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
             const results = await sendGetSuggestionsMessage('', mode);
+            if (spotlightClosed) return;
             asyncSuggestions = results || [];
             updateDisplay();
         } catch (error) {
+            if (spotlightClosed) return;
             Logger.error('[Spotlight] Error loading initial results:', error);
             instantSuggestion = null;
             asyncSuggestions = [];
@@ -509,7 +510,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     // Pre-fill URL in current-tab mode
     if (spotlightTabMode === SpotlightTabMode.CURRENT_TAB && window.arcifyCurrentTabUrl) {
         input.value = window.arcifyCurrentTabUrl;
-        setTimeout(() => {
+        prefillTimer = setTimeout(() => {
             handleInstantInput();
             handleAsyncSearch();
         }, 10);
@@ -520,6 +521,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
 
     // Handle instant suggestion update (no debouncing)
     function handleInstantInput() {
+        if (spotlightClosed) return;
         const query = input.value.trim();
 
         if (!query) {
@@ -538,6 +540,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
     async function handleAsyncSearch() {
+        if (spotlightClosed) return;
         const query = input.value.trim();
         const queryId = ++searchQueryId;
 
@@ -585,6 +588,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
 
     // Update the display with combined results
     function updateDisplay() {
+        if (spotlightClosed) return;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults);
 
@@ -666,22 +670,37 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     );
 
     // Close spotlight function
-    let spotlightClosed = false;
     function closeSpotlight() {
         if (spotlightClosed) return;
         spotlightClosed = true;
+        searchQueryId++;
+        clearTimeout(prefillTimer);
+        removeGlobalCloseListener();
         bridgeStatus.dispose();
         dialog.close();
 
         SpotlightMessageClient.notifyClosed();
 
-        setTimeout(() => {
-            // Removing the host takes the dialog and both stylesheets with it.
-            if (host.parentNode) {
-                host.parentNode.removeChild(host);
-                window.arcifySpotlightInjected = false;
-            }
-        }, 200);
+        removalTimer = setTimeout(disposeSpotlight, 200);
+    }
+
+    function disposeSpotlight() {
+        closeSpotlight();
+        clearTimeout(removalTimer);
+        dialog.removeEventListener('close', closeSpotlight);
+        // This instance owns only its host. An old close event/timer must never
+        // remove or change tracking for a newer, reopened instance.
+        host.remove();
+        if (activeOverlay?.host === host) {
+            activeOverlay = null;
+            window.arcifySpotlightInjected = false;
+        }
+    }
+
+    function focusSpotlight() {
+        input.focus();
+        input.select();
+        input.scrollLeft = 0;
     }
 
     // Handle backdrop clicks
@@ -694,23 +713,24 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     dialog.addEventListener('close', closeSpotlight);
 
     // Listen for global close messages from background script
-    SpotlightMessageClient.setupGlobalCloseListener(() => {
-        const existingDialog = getExistingSpotlightDialog();
-        if (existingDialog && existingDialog.open) {
-            closeSpotlight();
-        }
-    });
+    const removeGlobalCloseListener = SpotlightMessageClient.setupGlobalCloseListener(closeSpotlight);
+
+    activeOverlay = { host, dialog, mode: spotlightTabMode, close: closeSpotlight, dispose: disposeSpotlight, focus: focusSpotlight };
+    window.arcifySpotlightInjected = true;
 
     // Show dialog and focus input
-    dialog.showModal();
+    try {
+        dialog.showModal();
+    } catch (error) {
+        disposeSpotlight();
+        throw error;
+    }
 
     // Notify background that spotlight opened in this tab
     SpotlightMessageClient.notifyOpened();
 
     // Focus input immediately (no delay needed)
-    input.focus();
-    input.select();
-    input.scrollLeft = 0;
+    focusSpotlight();
 
     /**
      * PHASE 2: NON-BLOCKING INITIALIZATION OPTIMIZATIONS
@@ -730,6 +750,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         try {
             // Update active space color and group name asynchronously (non-blocking)
             const { color: realActiveSpaceColor, groupName } = await SpotlightMessageClient.getActiveSpaceColor();
+            if (spotlightClosed) return;
             activeGroupName = groupName;
             if (realActiveSpaceColor !== activeSpaceColor) {
                 // Update CSS variables by replacing the dedicated accent stylesheet
@@ -742,11 +763,12 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         }
 
         // Load initial results after color update (if input is still empty)
-        if (!input.value.trim()) {
+        if (!spotlightClosed && !input.value.trim()) {
             loadInitialResults();
         }
     })();
 
+    return { open: true };
 }
 
 /**

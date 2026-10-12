@@ -143,7 +143,7 @@ function pairedLaunch(message, peerId) {
     const previous = launchQueues.get(message.windowId) || Promise.resolve();
     const promise = previous.catch(() => {}).then(async () => {
         if (await arcifyBridge.getPeerId() !== peerId) throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
-        return injectSpotlightScript(message.mode, message.windowId);
+        return injectSpotlightScript(message.mode, message.windowId, { ensureOpen: true });
     });
     launchQueues.set(message.windowId, promise);
     recentLaunches.set(key, { signature, promise });
@@ -178,17 +178,17 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 const spotlightOpenTabs = new Set();
 
 // Close spotlight in tracked tabs only
-async function closeSpotlightInTrackedTabs(windowId = null) {
+async function closeSpotlightInTrackedTabs(windowId = null, exceptTabId = null) {
     try {
         const targetIds = windowId ? new Set((await chrome.tabs.query({ windowId })).map(tab => tab.id)) : null;
-        const closePromises = Array.from(spotlightOpenTabs).filter(id => !targetIds || targetIds.has(id)).map(tabId =>
+        const closingIds = Array.from(spotlightOpenTabs).filter(id => id !== exceptTabId && (!targetIds || targetIds.has(id)));
+        const closePromises = closingIds.map(tabId =>
             chrome.tabs.sendMessage(tabId, { action: 'closeSpotlight' }).catch(() => {
                 spotlightOpenTabs.delete(tabId);
             })
         );
         await Promise.all(closePromises);
-        if (!targetIds) spotlightOpenTabs.clear();
-        else for (const id of targetIds) spotlightOpenTabs.delete(id);
+        for (const id of closingIds) spotlightOpenTabs.delete(id);
     } catch (error) {
         Logger.error('[Background] Error closing spotlight in tracked tabs:', error);
     }
@@ -219,7 +219,7 @@ function supportsContentScripts(url) {
 }
 
 // Helper function to activate spotlight via content script messaging
-async function injectSpotlightScript(spotlightTabMode, windowId = null) {
+async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensureOpen = false } = {}) {
     try {
         // Check if spotlight is enabled
         const settings = await getSettings();
@@ -240,12 +240,12 @@ async function injectSpotlightScript(spotlightTabMode, windowId = null) {
             return;
         }
 
-        // First, close any existing spotlights in tracked tabs
-        await closeSpotlightInTrackedTabs(windowId);
-
         // Get the active tab
         const [tab] = await chrome.tabs.query({ active: true, ...(windowId ? { windowId } : { currentWindow: true }) });
         if (tab) {
+            // Let the target content script own its lifecycle. Closing it here races its
+            // delayed teardown and also prevents the normal shortcut from toggling it.
+            await closeSpotlightInTrackedTabs(windowId, tab.id);
             // Reuse an already-open Spotlight fallback rather than multiplying helper tabs.
             if (tab.url?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html')) return true;
             if (!supportsContentScripts(tab.url)) {
@@ -257,15 +257,16 @@ async function injectSpotlightScript(spotlightTabMode, windowId = null) {
                 const response = await chrome.tabs.sendMessage(tab.id, {
                     action: 'activateSpotlight',
                     mode: spotlightTabMode,
+                    ensureOpen,
                     tabUrl: tab.url,
                     tabId: tab.id
                 });
 
                 if (response && response.success) {
-                    chrome.runtime.sendMessage({
-                        action: 'spotlightOpened',
-                        mode: spotlightTabMode
-                    });
+                    // Rebuild tracking even after a worker restart. Shortcut toggles
+                    // may intentionally close the UI; paired launches must leave it open.
+                    if (response.open !== false) spotlightOpenTabs.add(tab.id);
+                    else spotlightOpenTabs.delete(tab.id);
                     return true;
                 }
                 return await fallbackToChromeTabs(spotlightTabMode, windowId);
