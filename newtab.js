@@ -306,8 +306,8 @@ export async function initializeSpotlight() {
 
     // Send get suggestions message to background script
     // Use 'current-tab' mode so navigation happens in the current tab (the new tab page itself)
-    async function sendGetSuggestionsMessage(query, mode) {
-        return await SpotlightMessageClient.getSuggestions(query, mode);
+    async function sendGetSuggestionsMessage(query, mode, bridgeRefresh) {
+        return await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
     }
 
     // Handle result action via message passing
@@ -352,7 +352,7 @@ export async function initializeSpotlight() {
             asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
             updateDisplay();
         },
-        onRefresh: () => typedQuery ? handleAsyncSearch() : loadInitialResults()
+        onRefresh: bridgeRefresh => typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh)
     });
     const dispose = () => {
         if (disposed) return;
@@ -367,11 +367,11 @@ export async function initializeSpotlight() {
 
     // Load initial results
     // Use 'current-tab' mode since we're on the new tab page itself
-    async function loadInitialResults() {
+    async function loadInitialResults(bridgeRefresh) {
         const queryId = ++searchQueryId;
         try {
             instantSuggestion = null;
-            const results = await sendGetSuggestionsMessage('', 'current-tab');
+            const results = await sendGetSuggestionsMessage('', 'current-tab', bridgeRefresh);
             if (disposed || queryId !== searchQueryId || typedQuery) return;
             initialResultsReady = true;
             asyncSuggestions = results || [];
@@ -410,7 +410,7 @@ export async function initializeSpotlight() {
     // Phase 1: Local results render immediately (~10-50ms)
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
-    async function handleAsyncSearch() {
+    async function handleAsyncSearch(bridgeRefresh) {
         if (disposed) return;
         const query = typedQuery;
         const queryId = ++searchQueryId;
@@ -423,7 +423,7 @@ export async function initializeSpotlight() {
 
         try {
             // Phase 1: Local results (fast)
-            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, 'current-tab');
+            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, 'current-tab', bridgeRefresh);
             if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
             asyncSuggestions = localResults || [];
             updateDisplay();
@@ -433,7 +433,7 @@ export async function initializeSpotlight() {
             if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
 
             if (autocompleteResults && autocompleteResults.length > 0) {
-                const allResults = await SpotlightMessageClient.getSuggestions(query, 'current-tab');
+                const allResults = await SpotlightMessageClient.getSuggestions(query, 'current-tab', bridgeRefresh);
                 if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
                 asyncSuggestions = allResults || [];
                 updateDisplay();
@@ -491,7 +491,7 @@ export async function initializeSpotlight() {
     // Create the base input handler once (with debouncing)
     const baseInputHandler = SharedSpotlightLogic.createInputHandler(
         handleInstantInput,
-        handleAsyncSearch,
+        () => handleAsyncSearch(),
         150
     );
 

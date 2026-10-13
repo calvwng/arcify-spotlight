@@ -19,6 +19,7 @@ let registrationTarget;
 let activeTab;
 let nextRequest;
 let messageClient;
+let logicalSnapshot;
 
 function dispatch(listeners, message, from) {
     return new Promise(resolve => {
@@ -71,7 +72,10 @@ beforeEach(async () => {
     contentListeners = [];
     externalListeners = [];
     activeTab = { ...tab };
-    nextRequest = 0;
+    nextRequest = 0; logicalSnapshot = null;
+    let session = {};
+    chromeMock.storage.session = { get: vi.fn(async () => structuredClone(session)), set: vi.fn(async value => { Object.assign(session, structuredClone(value)); }) };
+    chromeMock.windows.get.mockImplementation(async id => ({ id, type: 'normal', incognito: false }));
     chromeMock.runtime.onMessage.addListener.mockImplementation(listener => registrationTarget.push(listener));
     chromeMock.runtime.onMessage.removeListener.mockImplementation(listener => {
         for (const listeners of [backgroundListeners, contentListeners]) {
@@ -82,6 +86,7 @@ beforeEach(async () => {
     chromeMock.runtime.onMessageExternal.addListener.mockImplementation(listener => externalListeners.push(listener));
     chromeMock.storage.local.get.mockImplementation(async key => key === 'arcifyBridgePeerId' ? { arcifyBridgePeerId: peerId } : {});
     chromeMock.storage.sync.get.mockResolvedValue({ enableSpotlight: true });
+    chromeMock.tabs.get.mockImplementation(async () => ({ ...activeTab }));
     chromeMock.tabs.query.mockImplementation(async query => query.windowId && query.windowId !== 2 ? [] : [{ ...activeTab }]);
     chromeMock.tabs.sendMessage.mockImplementation((tabId, message) => tabId === tab.id
         ? dispatch(contentListeners, message, { id: chromeMock.runtime.id }) : Promise.resolve(undefined));
@@ -90,11 +95,11 @@ beforeEach(async () => {
             callback({
                 type: 'arcify-bridge', version: 1, requestId: request.requestId,
                 role: 'arcify', extensionId: peerId, ok: true,
-                snapshot: { windowId: 2, activeSpaceId: null, capturedAt: Date.now(), spaces: [], tabs: [], bookmarks: [] }
+                snapshot: logicalSnapshot?.(request.windowId) || { windowId: 2, activeSpaceId: null, capturedAt: Date.now(), spaces: [], tabs: [], bookmarks: [] }
             });
             return;
         }
-        return dispatch(backgroundListeners, message, sender);
+        return dispatch(backgroundListeners, message, { ...sender, tab: activeTab });
     });
     HTMLDialogElement.prototype.showModal = function () {
         if (!this.isConnected) throw new DOMException('Dialog is disconnected', 'InvalidStateError');
@@ -121,6 +126,7 @@ afterEach(async () => {
     delete HTMLDialogElement.prototype.showModal;
     delete HTMLDialogElement.prototype.close;
     delete HTMLElement.prototype.scrollIntoView;
+    delete chromeMock.storage.session;
 });
 
 describe('paired launch real overlay lifecycle (mock Chrome/native dialog boundary)', () => {
@@ -358,5 +364,43 @@ describe('paired sidebar real overlay DOM wiring', () => {
             expect(dialog().querySelector('[role="status"]').textContent).toBe('Arcify sidebar opened.');
             expectOpen();
         } finally { listenerSpy.mockRestore(); }
+    });
+});
+
+
+describe('paired logical invalidation through the real overlay transport', () => {
+    const invalidate = windowId => dispatch(externalListeners, { type: 'arcify-bridge', version: 1,
+        requestId: `logical-${++nextRequest}`, command: 'invalidate', windowId }, { id: peerId });
+    const row = () => dialog()?.querySelector('[data-result-type="open-tab"]');
+    let spaceName;
+    beforeEach(() => {
+        spaceName = 'Home';
+        logicalSnapshot = windowId => ({ windowId, activeSpaceId: 'home', capturedAt: Date.now(),
+            spaces: [{ id: 'home', name: spaceName, color: 'red', tabIds: [tab.id], pinnedTabIds: [], temporaryTabIds: [tab.id] }],
+            tabs: [{ ...activeTab, windowId, pinned: false, spaceId: 'home' }], bookmarks: [] });
+    });
+    it('refreshes a logical-only space change after worker restart while preserving selection and raw query', async () => {
+        await activate(); await vi.waitFor(() => expect(row()?.textContent).toContain('Home'));
+        input().value = 'Exam'; input().dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.waitFor(() => expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ action: 'getLocalSuggestions', query: 'Exam' })));
+        await pause(20); input().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        expect(row().classList.contains('selected')).toBe(true); expect(input().value).toBe(tab.url);
+        const original = host(); await restartBackground();
+        spaceName = 'Work renamed'; expect(await invalidate(2)).toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(row().textContent).toContain('Work renamed'));
+        expect(host()).toBe(original); expect(row().classList.contains('selected')).toBe(true); expect(input().value).toBe(tab.url);
+        expect(chromeMock.tabs.sendMessage).toHaveBeenCalledWith(42, { action: 'spotlightArcifyResultsChanged', windowId: 2, peerId });
+        expect(chromeMock.runtime.sendMessage.mock.calls.filter(([m]) => m?.action === 'getLocalSuggestions').every(([m]) => m.query === 'Exam')).toBe(true);
+        expect(chromeMock.storage.session.set.mock.calls.every(([value]) => Object.keys(value).every(key => key === 'spotlightVisibleOverlayTabIds'))).toBe(true);
+        expect(chromeMock.tabs.group).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled();
+    });
+    it('re-resolves an overlay that moved windows and ignores queued invalidations from its old window', async () => {
+        await activate(); await vi.waitFor(() => expect(row()?.textContent).toContain('Home'));
+        chromeMock.tabs.query.mockImplementation(async query => !query.windowId || query.windowId === activeTab.windowId ? [{ ...activeTab }] : []);
+        activeTab.windowId = 3; spaceName = 'New window';
+        await invalidate(2); await pause(130); expect(row().textContent).toContain('Home');
+        await invalidate(3); await vi.waitFor(() => expect(row().textContent).toContain('New window'));
+        expect(chromeMock.tabs.sendMessage).toHaveBeenCalledWith(42, { action: 'spotlightArcifyResultsChanged', windowId: 3, peerId });
+        expectOpen();
     });
 });

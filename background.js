@@ -13,11 +13,11 @@ import { getSettings } from './utils.js';
 import { arcifyProvider } from './shared/data-providers/arcify-provider.js';
 import { BookmarkUtils } from './bookmark-utils.js';
 import { arcifyBridge } from './shared/arcify-bridge.js';
-import { BRIDGE_TYPE, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
+import { BRIDGE_TYPE, isExtensionId, isWindowId, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
 import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
-import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, installLiveTabResultUpdates } from './shared/live-tab-results.js';
+import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, createArcifyResultUpdates, installLiveTabResultUpdates } from './shared/live-tab-results.js';
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -90,6 +90,7 @@ async function bridgeContext(message, sender) {
 
 async function searchEngineForSender(message, sender) {
     const peerId = await arcifyBridge.getPeerId();
+    assertRefreshScope(message, peerId);
     const sourceTabId = sender.tab?.id ?? message.tabId;
     const helperTabId = isNewTabSender(sender) && Number.isSafeInteger(sourceTabId) && sourceTabId > 0 ? sourceTabId : null;
     if (!peerId) {
@@ -99,12 +100,36 @@ async function searchEngineForSender(message, sender) {
         return new SearchEngine(provider);
     }
     const context = await bridgeContext(message, sender);
+    assertRefreshScope(message, peerId, context.windowId);
     const snapshot = await arcifyBridge.snapshot(context.windowId, peerId);
     if (!snapshot) throw new Error('Arcify was disconnected. Search again.');
     // The exact calling helper is already visible. Other same-URL/title tabs are
     // independent choices and remain searchable. Never guess from the active tab.
     const excludeTabId = helperTabId ? context.tabId : null;
     return new SearchEngine(new ArcifyBridgeProvider(snapshot, backgroundDataProvider, peerId, { excludeTabId }));
+}
+
+// A logical invalidation remains paired throughout its entire fresh read. A
+// revocation between UI validation and search must not switch to native results.
+function assertRefreshScope(message, peerId, windowId) {
+    const scope = message.bridgeRefresh;
+    if (scope === undefined) return;
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope) ||
+        Object.keys(scope).some(key => !['peerId', 'windowId'].includes(key)) ||
+        !isExtensionId(scope.peerId) || !isWindowId(scope.windowId) ||
+        scope.peerId !== peerId || (windowId !== undefined && scope.windowId !== windowId)) {
+        throw Object.assign(new Error('Arcify connection or window changed. Search again.'), { code: 'DISCONNECTED' });
+    }
+}
+
+async function validateCompletedRefresh(message, sender) {
+    if (message.bridgeRefresh === undefined) return;
+    const context = await bridgeContext(message, sender);
+    // Browser-attested sender.tab belongs to dispatch time; the surface may move
+    // while its snapshot/search is awaited. Check its live identity once more.
+    const tab = await chrome.tabs.get(context.tabId);
+    if (!isWindowId(tab?.windowId)) throw new Error('The source tab is no longer available.');
+    assertRefreshScope(message, await arcifyBridge.getPeerId(), tab.windowId);
 }
 
 function isNewTabSender(sender) {
@@ -171,8 +196,21 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
         try {
             const peerId = await arcifyBridge.getPeerId();
             if (!trustedSender(sender, peerId)) throw Object.assign(new Error('Pair this Arcify extension in Spotlight settings first.'), { code: 'UNAUTHORIZED' });
-            validateRequest(message, ['hello', 'launch', 'startupSuggestion']);
-            await chrome.windows.get(message.windowId);
+            validateRequest(message, ['hello', 'launch', 'startupSuggestion', 'invalidate']);
+            let targetWindow;
+            try { targetWindow = await chrome.windows.get(message.windowId); }
+            catch (error) {
+                if (message.command !== 'invalidate') throw error;
+                throw Object.assign(new Error('The Arcify result window is no longer available.'), { code: 'INVALID_WINDOW' });
+            }
+            if (message.command === 'invalidate') {
+                if (targetWindow?.id !== message.windowId || targetWindow.incognito || targetWindow.type !== 'normal' ||
+                    (sender.tab && sender.tab.windowId !== message.windowId)) {
+                    throw Object.assign(new Error('Invalid Arcify result window.'), { code: 'INVALID_WINDOW' });
+                }
+                if (await arcifyBridge.getPeerId() !== peerId) throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
+                arcifyResultUpdates.invalidate(message.windowId, peerId);
+            }
             if (message.command === 'launch') {
                 const opened = await pairedLaunch(message, peerId);
                 if (!opened) throw Object.assign(new Error('Spotlight is disabled or could not open.'), { code: 'LAUNCH_FAILED' });
@@ -193,6 +231,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 // Track tabs that have spotlight open for efficient closing
 const spotlightOpenTabs = createLiveOverlayRegistry(chrome);
 installLiveTabResultUpdates(chrome, () => spotlightOpenTabs.getIds());
+const arcifyResultUpdates = createArcifyResultUpdates(chrome, () => spotlightOpenTabs.getIds(), () => arcifyBridge.getPeerId());
 
 // Close spotlight in tracked tabs only
 async function closeSpotlightInTrackedTabs(windowId = null, exceptTabId = null) {
@@ -348,9 +387,14 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === LIVE_TAB_CONTEXT) {
         if (sender.id !== chrome.runtime.id) return false;
-        Promise.all([bridgeContext(message, sender), arcifyBridge.getPeerId()]).then(([context, peerId]) => sendResponse({ success: true,
-            windowId: context.windowId, sourceTabId: context.tabId, allWindows: !peerId }),
-            () => sendResponse({ success: false }));
+        (async () => {
+            try {
+                const peerId = await arcifyBridge.getPeerId();
+                const context = await bridgeContext(message, sender);
+                if (await arcifyBridge.getPeerId() !== peerId) return sendResponse({ success: false });
+                sendResponse({ success: true, windowId: context.windowId, sourceTabId: context.tabId, allWindows: !peerId, peerId });
+            } catch { sendResponse({ success: false }); }
+        })();
         return true;
     } else if (message.action === 'openNewTab') {
         chrome.tabs.create({ url: message.url });
@@ -543,6 +587,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const results = await engine.getSpotlightSuggestionsImmediate(
                     query, message.mode
                 );
+                await validateCompletedRefresh(message, sender);
                 sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
             } catch (error) {
                 Logger.error('[Background] Error getting spotlight suggestions:', error);
@@ -558,6 +603,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const results = await engine.getLocalSuggestionsImmediate(
                     query, message.mode
                 );
+                await validateCompletedRefresh(message, sender);
                 sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
             } catch (error) {
                 Logger.error('[Background] Error getting local suggestions:', error);

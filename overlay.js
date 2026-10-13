@@ -461,8 +461,8 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let searchQueryId = 0; // Query generation counter for stale response protection (PERF-03)
 
     // Send get suggestions message to background script using shared client
-    async function sendGetSuggestionsMessage(query, mode) {
-        return await SpotlightMessageClient.getSuggestions(query, mode);
+    async function sendGetSuggestionsMessage(query, mode, bridgeRefresh) {
+        return await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
     }
 
     // Handle result action via message passing using shared client (with tab ID optimization)
@@ -501,11 +501,11 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
             updateDisplay();
         },
-        onRefresh: () => typedQuery ? handleAsyncSearch() : loadInitialResults()
+        onRefresh: bridgeRefresh => typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh)
     });
 
     // Load initial results
-    async function loadInitialResults() {
+    async function loadInitialResults(bridgeRefresh) {
         if (spotlightClosed) return;
         const queryId = ++searchQueryId;
         try {
@@ -513,7 +513,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             instantSuggestion = null;
 
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
-            const results = await sendGetSuggestionsMessage('', mode);
+            const results = await sendGetSuggestionsMessage('', mode, bridgeRefresh);
             if (spotlightClosed || queryId !== searchQueryId || typedQuery) return;
             asyncSuggestions = results || [];
             updateDisplay();
@@ -563,7 +563,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Phase 1: Local results render immediately (~10-50ms)
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
-    async function handleAsyncSearch() {
+    async function handleAsyncSearch(bridgeRefresh) {
         if (spotlightClosed) return;
         const query = typedQuery;
         const queryId = ++searchQueryId;
@@ -578,7 +578,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
 
             // Phase 1: Local results (fast, ~10-50ms)
-            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, mode);
+            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, mode, bridgeRefresh);
             if (queryId !== searchQueryId) return; // Stale query -- discard
             asyncSuggestions = localResults || [];
             updateDisplay();
@@ -590,7 +590,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             if (autocompleteResults && autocompleteResults.length > 0) {
                 // Merge autocomplete with local results using the original all-in-one path
                 // for proper deduplication, scoring, and sorting
-                const allResults = await SpotlightMessageClient.getSuggestions(query, mode);
+                const allResults = await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
                 if (queryId !== searchQueryId) return; // Stale query -- discard
                 asyncSuggestions = allResults || [];
                 updateDisplay();
@@ -650,7 +650,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Create the base input handler once (with debouncing)
     const baseInputHandler = SharedSpotlightLogic.createInputHandler(
         handleInstantInput,    // instant update (zero latency)
-        handleAsyncSearch,     // async update (debounced by SearchEngine)
+        () => handleAsyncSearch(),     // async update (debounced by SearchEngine)
         150                    // debounce delay in ms
     );
 

@@ -8,14 +8,17 @@ import './setup.js';
 const PEER = 'a'.repeat(32);
 const OWN = 'b'.repeat(32);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let live, sourceId, sourceUrl, page, registrationTarget, backgroundListeners, pageListeners, externalListeners, contextDelay;
+let live, sourceId, sourceUrl, page, registrationTarget, backgroundListeners, pageListeners, externalListeners, contextDelay, logicalSpaces, snapshotHook;
 const event = () => {
     const listeners = new Set();
     return { addListener: vi.fn(fn => listeners.add(fn)), removeListener: vi.fn(fn => listeners.delete(fn)), emit: (...args) => [...listeners].forEach(fn => fn(...args)) };
 };
 const tab = (id, windowId = 2) => ({ id, windowId, title: 'New Tab', url: 'chrome://newtab/', active: id === sourceId, pinned: false, spaceId: 'home', groupId: -1 });
 const snapshot = windowId => ({ windowId, activeSpaceId: 'home', capturedAt: Date.now(),
-    spaces: [{ id: 'home', name: 'Home', color: 'blue', tabIds: live.filter(t => t.windowId === windowId).map(t => t.id), pinnedTabIds: [], temporaryTabIds: live.filter(t => t.windowId === windowId).map(t => t.id) }],
+    spaces: logicalSpaces.map(space => {
+        const tabIds = (space.order || live.map(t => t.id)).filter(id => live.some(t => t.id === id && t.windowId === windowId && t.spaceId === space.id));
+        return { id: space.id, name: space.name, color: space.color, tabIds, pinnedTabIds: [], temporaryTabIds: tabIds };
+    }),
     tabs: live.filter(t => t.windowId === windowId).map(t => ({ ...t })), bookmarks: [] });
 function dispatch(listeners, message, sender) {
     return new Promise(resolve => {
@@ -30,6 +33,8 @@ const internal = message => dispatch(backgroundListeners, message, source());
 const rows = () => [...page.resultsContainer.querySelectorAll('[data-result-type="open-tab"]')];
 const shownIds = () => page.selectionManager.results.filter(result => result.type === 'open-tab').map(result => result.metadata.tabId);
 const bridgeMutations = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === PEER && !['hello', 'snapshot'].includes(request.command));
+const invalidate = (extra = {}, sender = { id: PEER, origin: `chrome-extension://${PEER}` }) => dispatch(externalListeners, { type: 'arcify-bridge', version: 1, requestId: 'logical-change', command: 'invalidate', windowId: 2, ...extra }, sender);
+const readCount = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === PEER && request.command === 'snapshot').length;
 const actions = () => chromeMock.runtime.sendMessage.mock.calls.filter(([message]) => message?.action === 'spotlightHandleResult');
 async function open() {
     const { initializeSpotlight } = await import('../../newtab.js');
@@ -49,7 +54,8 @@ beforeEach(async () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     HTMLElement.prototype.scrollIntoView = () => {};
     delete window.arcifyCurrentTabId;
-    sourceId = 12; sourceUrl = chromeMock.runtime.getURL('newtab.html'); contextDelay = null;
+    sourceId = 12; sourceUrl = chromeMock.runtime.getURL('newtab.html'); contextDelay = null; snapshotHook = null;
+    logicalSpaces = [{ id: 'home', name: 'Home', color: 'blue' }];
     live = [tab(11), tab(12)]; backgroundListeners = []; pageListeners = []; externalListeners = [];
     chromeMock.runtime.onMessage.addListener.mockImplementation(listener => registrationTarget.push(listener));
     chromeMock.runtime.onMessage.removeListener.mockImplementation(listener => {
@@ -65,14 +71,16 @@ beforeEach(async () => {
     chromeMock.tabs.get.mockImplementation(async id => {
         const current = live.find(t => t.id === id); if (!current) throw new Error('Closed tab'); return { ...current };
     });
+    chromeMock.windows.get.mockImplementation(async id => ({ id, type: 'normal', incognito: false }));
     chromeMock.tabs.getCurrent = vi.fn(async () => ({ ...live.find(t => t.id === sourceId) }));
     chromeMock.runtime.sendMessage.mockImplementation((target, request, callback) => {
         if (target === PEER) {
-            callback({ type: 'arcify-bridge', version: 1, role: 'arcify', extensionId: PEER, requestId: request.requestId, ok: true,
-                snapshot: snapshot(request.windowId), capabilities: ['openSidebar'], ...(request.tabId ? { tabId: request.tabId } : {}) });
+            const response = { type: 'arcify-bridge', version: 1, role: 'arcify', extensionId: PEER, requestId: request.requestId, ok: true,
+                snapshot: snapshot(request.windowId), capabilities: ['openSidebar'], ...(request.tabId ? { tabId: request.tabId } : {}) };
+            if (!snapshotHook?.(request, response, callback)) callback(response);
             return;
         }
-        if (target.action === 'spotlightLiveTabsChanged') return dispatch(pageListeners, target, { id: OWN });
+        if (['spotlightLiveTabsChanged', 'spotlightArcifyResultsChanged'].includes(target.action)) return dispatch(pageListeners, target, { id: OWN });
         if (target.action === 'spotlightLiveTabContext' && contextDelay) return contextDelay;
         return internal(target);
     });
@@ -168,5 +176,130 @@ describe('paired live-tab result DOM regression', () => {
         await vi.waitFor(() => expect(shownIds()).toEqual([20]));
         closeTab(20); await vi.waitFor(() => expect(shownIds()).toEqual([]));
         expect(page.selectionManager.getSelectedResult()).toBeNull();
+    });
+});
+
+
+describe('paired logical Arcify changes in the real result DOM', () => {
+    it('refreshes membership, order, name and color from a fresh snapshot without native tab/group events', async () => {
+        live.push(tab(13)); await open(); const before = readCount();
+        logicalSpaces.push({ id: 'work', name: 'Work renamed', color: 'red', order: [13, 11] });
+        live.find(t => t.id === 11).spaceId = 'work'; live.find(t => t.id === 13).spaceId = 'work';
+        expect(await invalidate()).toMatchObject({ type: 'arcify-bridge', version: 1, requestId: 'logical-change', role: 'spotlight', ok: true });
+        await vi.waitFor(() => expect(shownIds()).toEqual([13, 11]));
+        expect(readCount()).toBeGreaterThan(before);
+        expect(rows().every(row => row.textContent.includes('Work renamed'))).toBe(true);
+        expect(page.selectionManager.results.filter(r => r.type === 'open-tab').every(r => r.metadata.spaceColor === 'red')).toBe(true);
+        expect(live.every(t => t.groupId === -1)).toBe(true);
+        expect(chromeMock.tabs.group).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled();
+        expect(chromeMock.storage.local.set).not.toHaveBeenCalled(); expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('preserves the typed query, manually selected identity and URL preview across logical membership changes', async () => {
+        live.push(tab(13)); live.forEach(t => { if (t.id !== sourceId) t.title = 'Budget document'; });
+        await open(); page.input.value = 'budg'; page.input.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.waitFor(() => expect(chromeMock.runtime.sendMessage.mock.calls.some(([m]) => m?.action === 'getLocalSuggestions' && m.query === 'budg')).toBe(true));
+        await pause(20); page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+        const selectedId = page.selectionManager.getSelectedResult().metadata.tabId;
+        logicalSpaces.push({ id: 'work', name: 'Work', color: 'red' });
+        live.find(t => t.id === selectedId).spaceId = 'work';
+        await invalidate();
+        await vi.waitFor(() => expect(page.selectionManager.getSelectedResult()?.metadata.spaceName).toBe('Work'));
+        expect(page.selectionManager.getSelectedResult().metadata.tabId).toBe(selectedId);
+        expect(page.input.value).toBe('chrome://newtab/');
+        expect(chromeMock.runtime.sendMessage.mock.calls.filter(([m]) => m?.action === 'getLocalSuggestions').every(([m]) => m.query === 'budg')).toBe(true);
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('discards an older delayed snapshot when a logical invalidation has refreshed the same query', async () => {
+        await open(); let release;
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'snapshot') return false;
+            snapshotHook = null; release = () => callback(response); return true;
+        };
+        page.input.value = 'new'; page.input.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        logicalSpaces[0].name = 'Fresh space'; await invalidate();
+        await vi.waitFor(() => expect(rows()[0]?.textContent).toContain('Fresh space'));
+        release(); await pause(60);
+        expect(rows()[0].textContent).toContain('Fresh space'); expect(rows()[0].textContent).not.toContain('Home');
+        expect(page.input.value).toBe('new'); expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('rejects malformed, revoked, origin-spoofed and cross-window tab senders before a refresh', async () => {
+        await open(); const before = readCount();
+        for (const extra of [{ windowId: 0 }, { windowId: '2' }, { snapshot: {} }, { version: 2 }]) expect((await invalidate(extra)).ok).toBe(false);
+        for (const sender of [{ id: 'c'.repeat(32) }, { id: PEER, url: 'https://wrong.test' }, { id: PEER, origin: 'https://wrong.test' }]) {
+            expect(await invalidate({}, sender)).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+        }
+        expect(await invalidate({}, { id: PEER, tab: { id: 20, windowId: 3 } })).toMatchObject({ ok: false, error: { code: 'INVALID_WINDOW' } });
+        chromeMock.windows.get.mockResolvedValueOnce({ id: 2, type: 'normal', incognito: true });
+        expect(await invalidate()).toMatchObject({ ok: false, error: { code: 'INVALID_WINDOW' } });
+        chromeMock.windows.get.mockResolvedValueOnce({ id: 2, type: 'popup' });
+        expect(await invalidate()).toMatchObject({ ok: false, error: { code: 'INVALID_WINDOW' } });
+        chromeMock.windows.get.mockRejectedValueOnce(new Error('No window with ID 2'));
+        expect(await invalidate()).toMatchObject({ ok: false, error: { code: 'INVALID_WINDOW' } });
+        chromeMock.storage.local.get.mockResolvedValue({});
+        expect(await invalidate()).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+        await pause(130); expect(readCount()).toBe(before); expect(shownIds()).toEqual([11]);
+    });
+    it('rejects pairing changed while validating the requested browser window', async () => {
+        await open(); const before = readCount(); let resolve;
+        chromeMock.windows.get.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+        const response = invalidate(); await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+        chromeMock.storage.local.get.mockResolvedValue({}); resolve({ id: 2, type: 'normal' });
+        expect(await response).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+        await pause(130); expect(readCount()).toBe(before);
+    });
+    it('safely scopes valid wrong-window signals and moved helper contexts', async () => {
+        live.push(tab(20, 3)); await open(); const before = readCount();
+        await invalidate({ windowId: 3 }); await pause(130); expect(readCount()).toBe(before);
+        live.find(t => t.id === sourceId).windowId = 3;
+        await invalidate(); await pause(130); expect(readCount()).toBe(before);
+        await invalidate({ windowId: 3 }); await vi.waitFor(() => expect(shownIds()).toEqual([20]));
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('keeps the accepted pairing scope when revocation races the fresh search dispatch', async () => {
+        await open(); const before = readCount();
+        const original = chromeMock.runtime.sendMessage.getMockImplementation();
+        chromeMock.runtime.sendMessage.mockImplementation((message, request, callback) => {
+            if (message?.bridgeRefresh) chromeMock.storage.local.get.mockResolvedValue({});
+            return original(message, request, callback);
+        });
+        await invalidate(); await vi.waitFor(() => expect(shownIds()).toEqual([]));
+        expect(readCount()).toBe(before);
+        expect(document.querySelector('[role="status"]').textContent).toContain('connection or window changed');
+        expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+            action: 'getSpotlightSuggestions', bridgeRefresh: { peerId: PEER, windowId: 2 }
+        }));
+    });
+    it.each(['pairing', 'window'])('rejects a fresh result if %s changes after snapshot validation during result production', async changed => {
+        await open();
+        const { ArcifyBridgeProvider } = await import('../../shared/data-providers/arcify-bridge-provider.js');
+        const original = ArcifyBridgeProvider.prototype.getOpenTabs;
+        vi.spyOn(ArcifyBridgeProvider.prototype, 'getOpenTabs').mockImplementationOnce(async function (...args) {
+            if (changed === 'pairing') chromeMock.storage.local.get.mockResolvedValue({});
+            else live.find(t => t.id === sourceId).windowId = 3;
+            return original.apply(this, args);
+        });
+        await invalidate(); await vi.waitFor(() => expect(shownIds()).toEqual([]));
+        expect(document.querySelector('[role="status"]').textContent).toContain('connection or window changed');
+    });
+    it('rejects a fresh result when its source moves while the snapshot is awaited', async () => {
+        await open(); let release;
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'snapshot') return false;
+            snapshotHook = null; release = () => callback(response); return true;
+        };
+        await invalidate(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        live.find(t => t.id === sourceId).windowId = 3; release();
+        await vi.waitFor(() => expect(shownIds()).toEqual([]));
+        expect(document.querySelector('[role="status"]').textContent).toContain('connection or window changed');
+    });
+    it('fails a refresh visibly when the companion disappears instead of falling back to native tabs', async () => {
+        await open();
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'snapshot') return false;
+            callback({ ...response, ok: false, error: { code: 'UNAVAILABLE', message: 'Companion unavailable' } }); return true;
+        };
+        await invalidate(); await vi.waitFor(() => expect(shownIds()).toEqual([]));
+        expect(chromeMock.tabs.update).not.toHaveBeenCalled(); expect(bridgeMutations()).toHaveLength(0);
     });
 });

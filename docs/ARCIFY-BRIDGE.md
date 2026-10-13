@@ -243,11 +243,11 @@ invalidate cached readiness, and stale preparation/action replies cannot revive 
 Chrome may initially focus its native omnibox on a new tab. The startup offer does
 not steal that focus: bare Enter at browser startup is therefore not guaranteed to
 invoke Spotlight. Focus Spotlight's input or click its command. The prior exact
-pair Arcify `6081313` / Spotlight `6fae7bb` passed all 19 checks in
-[paired Chrome run 38346668819](https://github.com/calvwng/arcify/actions/runs/38346668819),
+pair Arcify `3576654` / Spotlight `23f741b` passed all 21 checks in
+[paired Chrome run 38350796537](https://github.com/calvwng/arcify/actions/runs/38350796537),
 including genuine warm/cold-worker gestures, native rendering and security rejection.
 That run explicitly focused Spotlight before Enter; it did not test browser-startup
-focus or Helium. Later search/freshness changes require their own exact-head run;
+focus or Helium. Later logical-state invalidation changes require their own exact-head run;
 see the linked draft PRs for current results. Mocked module/DOM tests remain distinct
 from this browser evidence.
 
@@ -268,11 +268,26 @@ sidebar command; this is not a blanket filter on similarly named bookmarks/pages
 
 Paired tab refreshes are scoped to the source window. Standalone new-tab/helper
 results can span windows and refresh accordingly; standalone content overlays still
-need a new query or focus return for changes made only in another window. Browser
-events do not cover every Arcify-only logical membership/order change when native
-group sync is off; those require a fresh query/focus snapshot until a separate
-paired invalidation signal is implemented. Spotlight does not maintain a competing
-workspace database.
+need a new query or focus return for changes made only in another window.
+
+With matching updated peers, Arcify also sends an optional protocol-v1 `invalidate`
+request containing only the relevant `windowId`. This covers authoritative
+membership/order, active-space and metadata changes even with native group sync
+off, plus relevant saved bookmark updates. Spotlight validates the currently saved
+peer, extension sender, strict payload/version and window; coalesced internal
+notifications then use the same fresh-snapshot refresh path. Accepted changes
+invalidate older pending results immediately and preserve typed query/manual
+selection. No workspace content is trusted from the signal and no competing
+workspace database is maintained.
+
+Notification bursts are bounded. The current peer is rechecked across asynchronous
+work and on delivery; revoked or old-peer signals do not change standalone results.
+Arcify worker startup sends a best-effort invalidation for current normal windows, and Spotlight's
+session-only overlay identities survive worker suspension. Missing companion,
+unsupported older v1 peers or notification timeouts do not retry actions or loop.
+Older builds still work through ordinary queries/focus refresh; update both to gain
+logical-state notifications. Browser-created duplicate tabs are not automatically
+closed, because arbitrary unfinished address-bar text cannot be observed safely.
 
 ## Lifecycle, disconnect, and failures
 

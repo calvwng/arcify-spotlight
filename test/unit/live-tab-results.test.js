@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LIVE_TAB_CONTEXT, LIVE_TAB_RESULTS_CHANGED, createLiveOverlayRegistry, installLiveTabResultUpdates, isTabResultRemoved, mountLiveTabResults } from '../../shared/live-tab-results.js';
+import { LIVE_TAB_CONTEXT, LIVE_TAB_RESULTS_CHANGED, ARCIFY_RESULTS_CHANGED, createArcifyResultUpdates, createLiveOverlayRegistry, installLiveTabResultUpdates, isTabResultRemoved, mountLiveTabResults } from '../../shared/live-tab-results.js';
 
 const event = () => {
     const listeners = new Set();
@@ -177,5 +177,98 @@ describe('background tab-change fan-out', () => {
         await vi.advanceTimersByTimeAsync(100);
         expect(api.runtime.sendMessage).not.toHaveBeenCalled();
         expect(api.tabs.onRemoved.listeners.size).toBe(0);
+    });
+});
+
+const PEER = 'a'.repeat(32);
+const pairedMessage = (extra = {}) => ({ action: ARCIFY_RESULTS_CHANGED, windowId: 2, peerId: PEER, ...extra });
+describe('paired logical-state result invalidation', () => {
+    it('invalidates in-flight generations promptly, preserving read-only refresh coalescing', async () => {
+        source.peerId = PEER; await mount();
+        notify(pairedMessage()); notify(pairedMessage());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onInvalidate).toHaveBeenCalledWith([]);
+        expect(onRefresh).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(50);
+        expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+    it.each([
+        { windowId: null }, { windowId: 0 }, { windowId: '2' }, { peerId: '' },
+        { peerId: 'z'.repeat(32) }, { removedTabIds: [] }, { snapshot: {} }
+    ])('rejects malformed logical invalidation: %j', async extra => {
+        source.peerId = PEER; await mount(); notify(pairedMessage(extra));
+        await vi.advanceTimersByTimeAsync(100);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+    });
+    it.each([
+        { id: 'other' }, { id: 'own', tab: { id: 12, windowId: 2 } },
+        { id: 'own', url: 'https://wrong.test/' }, { id: 'own', origin: 'https://wrong.test' }
+    ])('rejects non-worker delivery: %j', async sender => {
+        source.peerId = PEER; await mount(); notify(pairedMessage(), sender);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+    });
+    it('never lets unpaired, revoked, old-peer or wrong-window signals refresh standalone results', async () => {
+        source.allWindows = true; await mount(); notify(pairedMessage());
+        await vi.advanceTimersByTimeAsync(50);
+        source.peerId = 'c'.repeat(32); notify(pairedMessage());
+        await vi.advanceTimersByTimeAsync(50);
+        source.peerId = PEER; notify(pairedMessage({ windowId: 3 }));
+        await vi.advanceTimersByTimeAsync(50);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+    });
+    it('revalidates before the delayed refresh if pairing is revoked after signal acceptance', async () => {
+        source.peerId = PEER; await mount(); notify(pairedMessage());
+        await vi.advanceTimersByTimeAsync(0); expect(onInvalidate).toHaveBeenCalled();
+        delete source.peerId; source.allWindows = true;
+        await vi.advanceTimersByTimeAsync(100); expect(onRefresh).not.toHaveBeenCalled();
+    });
+    it('waits for an older context read before authorizing against fresh pairing and source window', async () => {
+        let resolve;
+        api.runtime.sendMessage.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+        mounted = mountLiveTabResults({ api, onInvalidate, onRefresh });
+        await Promise.resolve(); notify(pairedMessage());
+        source.peerId = 'c'.repeat(32); source.windowId = 3;
+        resolve({ success: true, windowId: 2, sourceTabId: 12, peerId: PEER });
+        await mounted.ready; await vi.advanceTimersByTimeAsync(100);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+        source.peerId = PEER; notify(pairedMessage({ windowId: 3 }));
+        await vi.advanceTimersByTimeAsync(100); expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+    it('delivers the leading signal and bounds a sustained burst to one trailing fanout per cooldown', async () => {
+        const updates = createArcifyResultUpdates(api, () => new Set([12, 99]), async () => PEER);
+        cleanup = () => updates.dispose();
+        updates.invalidate(2, PEER); await vi.advanceTimersByTimeAsync(0);
+        expect(api.runtime.sendMessage).toHaveBeenCalledWith(pairedMessage());
+        for (let i = 0; i < 100; i++) updates.invalidate(2, PEER);
+        await vi.advanceTimersByTimeAsync(99);
+        expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(api.runtime.sendMessage).toHaveBeenCalledTimes(2);
+        expect(api.tabs.sendMessage).toHaveBeenCalledTimes(2);
+        expect(api.tabs.sendMessage).toHaveBeenLastCalledWith(12, pairedMessage());
+    });
+    it('drops queued old-peer signals and revocation during tab-target lookup', async () => {
+        let peerId = PEER, resolve;
+        api.tabs.query.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+        const updates = createArcifyResultUpdates(api, () => new Set([12]), async () => peerId);
+        cleanup = () => updates.dispose(); updates.invalidate(2, PEER);
+        await vi.advanceTimersByTimeAsync(0); peerId = null;
+        resolve([{ id: 12, windowId: 2 }]); await vi.advanceTimersByTimeAsync(0);
+        updates.invalidate(2, PEER); await vi.advanceTimersByTimeAsync(100);
+        expect(api.runtime.sendMessage).not.toHaveBeenCalled(); expect(api.tabs.sendMessage).not.toHaveBeenCalled();
+    });
+    it('rehydrates overlays after worker restart without storing any workspace data', async () => {
+        let stored = {};
+        api.storage = { session: { get: vi.fn(async () => structuredClone(stored)), set: vi.fn(async value => { stored = structuredClone(value); }) } };
+        await createLiveOverlayRegistry(api).add(12);
+        const restartedRegistry = createLiveOverlayRegistry(api);
+        const updates = createArcifyResultUpdates(api, () => restartedRegistry.getIds(), async () => PEER);
+        cleanup = () => updates.dispose(); updates.invalidate(2, PEER);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(api.tabs.sendMessage).toHaveBeenCalledWith(12, pairedMessage());
+        expect(stored).toEqual({ spotlightVisibleOverlayTabIds: [12] });
+        updates.dispose(); updates.invalidate(2, PEER); await vi.advanceTimersByTimeAsync(200);
+        expect(api.tabs.sendMessage).toHaveBeenCalledTimes(1);
     });
 });

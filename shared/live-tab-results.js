@@ -1,5 +1,8 @@
 /** Read-only result invalidation. Tab identities, never titles or URLs, expire rows. */
+import { isExtensionId } from './arcify-bridge-protocol.js';
+
 export const LIVE_TAB_RESULTS_CHANGED = 'spotlightLiveTabsChanged';
+export const ARCIFY_RESULTS_CHANGED = 'spotlightArcifyResultsChanged';
 export const LIVE_TAB_CONTEXT = 'spotlightLiveTabContext';
 const positiveId = value => Number.isSafeInteger(value) && value > 0;
 const OVERLAY_TABS_KEY = 'spotlightVisibleOverlayTabIds';
@@ -35,6 +38,59 @@ export function isTabResultRemoved(result, removedTabIds) {
     return positiveId(id) && removedTabIds.includes(id);
 }
 
+/** Shared delivery reaches extension pages and tracked content-script overlays. */
+async function fanOutResults(api, getOverlayTabIds, message, isCurrent) {
+    const quietSend = send => { try { Promise.resolve(send()).catch(() => {}); } catch { /* A page may close during fan-out. */ } };
+    let tabs;
+    try { tabs = await api.tabs.query(positiveId(message.windowId) ? { windowId: message.windowId } : {}); }
+    catch { tabs = []; } // The old window may close when its final tab moves.
+    const targets = new Set(await getOverlayTabIds());
+    if (!await isCurrent()) return;
+    const destinations = new Set(tabs.filter(tab => targets.has(tab.id)).map(tab => tab.id));
+    // A detached overlay has already left the queried old window. It must still
+    // receive its identity invalidation so it can resolve its new one.
+    for (const id of message.removedTabIds || []) if (targets.has(id)) destinations.add(id);
+    quietSend(() => api.runtime.sendMessage(message));
+    for (const id of destinations) quietSend(() => api.tabs.sendMessage(id, message));
+}
+
+/** Read-only paired signals are coalesced, scoped and never persist workspace data. */
+export function createArcifyResultUpdates(api, getOverlayTabIds, getPeerId, delayMs = 100) {
+    const pending = new Map();
+    let timer;
+    let flushing = false;
+    let disposed = false;
+    const schedule = () => {
+        if (disposed || timer || flushing || !pending.size) return;
+        // Leading-edge delivery cancels old generations promptly. Further bursts
+        // wait out the cooldown, including notifications received during fan-out.
+        timer = setTimeout(() => { timer = null; schedule(); }, delayMs);
+        void flush();
+    };
+    const flush = async () => {
+        flushing = true;
+        const changes = [...pending.values()];
+        pending.clear();
+        try {
+            for (const { windowId, peerId } of changes) {
+                if (disposed) break;
+                const isCurrent = async () => !disposed && await getPeerId() === peerId && !disposed;
+                if (!await isCurrent()) continue;
+                await fanOutResults(api, getOverlayTabIds, { action: ARCIFY_RESULTS_CHANGED, windowId, peerId }, isCurrent);
+            }
+        } catch { /* Pairing/storage may disappear during worker shutdown. Never retry a peer. */ }
+        finally { flushing = false; schedule(); }
+    };
+    return {
+        invalidate(windowId, peerId) {
+            if (disposed || !positiveId(windowId) || !isExtensionId(peerId)) return;
+            pending.set(windowId, { windowId, peerId });
+            schedule();
+        },
+        dispose() { disposed = true; clearTimeout(timer); pending.clear(); }
+    };
+}
+
 /** Background fan-out reaches extension pages and tracked content-script overlays. */
 export function installLiveTabResultUpdates(api, getOverlayTabIds = () => []) {
     const registrations = [];
@@ -46,7 +102,6 @@ export function installLiveTabResultUpdates(api, getOverlayTabIds = () => []) {
         event.addListener(callback);
         registrations.push(() => event.removeListener?.(callback));
     };
-    const quietSend = send => { try { Promise.resolve(send()).catch(() => {}); } catch { /* A page may close during fan-out. */ } };
     const flush = async () => {
         timer = null;
         const changes = [...pending.values()];
@@ -54,18 +109,7 @@ export function installLiveTabResultUpdates(api, getOverlayTabIds = () => []) {
         for (const change of changes) {
             if (disposed) return;
             const message = { action: LIVE_TAB_RESULTS_CHANGED, windowId: change.windowId, removedTabIds: [...change.removedTabIds] };
-            quietSend(() => api.runtime.sendMessage(message));
-            let tabs;
-            try { tabs = await api.tabs.query(positiveId(change.windowId) ? { windowId: change.windowId } : {}); }
-            catch { tabs = []; } // The old window may close when its final tab moves.
-            if (disposed) return;
-            const targets = new Set(await getOverlayTabIds());
-            if (disposed) return;
-            const destinations = new Set(tabs.filter(tab => targets.has(tab.id)).map(tab => tab.id));
-            // A detached overlay has already left the queried old window. It must
-            // still receive its identity invalidation so it can resolve its new one.
-            for (const id of change.removedTabIds) if (targets.has(id)) destinations.add(id);
-            for (const id of destinations) quietSend(() => api.tabs.sendMessage(id, message));
+            await fanOutResults(api, getOverlayTabIds, message, () => !disposed);
         }
     };
     const changed = (windowId, removedTabId) => {
@@ -97,6 +141,7 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
     let context = null;
     let timer;
     let dirty = false;
+    let pairedDirty = null;
     let contextRead = null;
     const removed = new Set();
     const active = () => !disposed && isActive() && doc.visibilityState !== 'hidden';
@@ -106,23 +151,34 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
             ...(positiveId(win.arcifyCurrentTabId) ? { tabId: win.arcifyCurrentTabId } : {}) }))
             .then(response => {
                 if (!disposed && response?.success && positiveId(response.windowId) && positiveId(response.sourceTabId)) {
-                    context = { windowId: response.windowId, tabId: response.sourceTabId, allWindows: response.allWindows === true };
+                    context = { windowId: response.windowId, tabId: response.sourceTabId, allWindows: response.allWindows === true, peerId: response.peerId || null };
                 }
                 return context;
             }).catch(() => null).finally(() => { contextRead = null; });
         return contextRead;
     };
+    const currentPair = (value, change) => value && value.peerId === change.peerId && value.windowId === change.windowId;
+    const freshContext = async () => {
+        if (contextRead) await contextRead;
+        context = null;
+        return readContext();
+    };
     const schedule = () => {
-        if (!active() || !dirty || timer) return;
+        if (!active() || (!dirty && !pairedDirty) || timer) return;
         timer = setTimeout(async () => {
             timer = null;
-            if (!active() || !dirty) return;
+            if (!active() || (!dirty && !pairedDirty)) return;
+            const change = pairedDirty;
+            pairedDirty = null;
+            const paired = change && currentPair(await freshContext(), change);
+            if (!active()) return;
+            if (!dirty && !paired) return;
             if (!context && !await readContext()) return;
             if (!active()) return;
             dirty = false;
             const ids = [...removed]; removed.clear();
             onInvalidate(ids);
-            await onRefresh();
+            await onRefresh(paired ? change : undefined);
         }, delayMs);
     };
     const invalidate = ids => {
@@ -136,7 +192,20 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
     const receive = (message, sender) => {
         // Browser-attested content scripts/pages cannot impersonate the worker.
         if (sender?.id !== api.runtime.id || sender.tab || (sender.url && sender.url !== api.runtime.getURL('background.js')) ||
-            message?.action !== LIVE_TAB_RESULTS_CHANGED || Array.isArray(message) ||
+            (sender.origin && sender.origin !== `chrome-extension://${api.runtime.id}`)) return false;
+        if (message?.action === ARCIFY_RESULTS_CHANGED) {
+            if (Array.isArray(message) || !Object.keys(message).every(key => ['action', 'windowId', 'peerId'].includes(key)) ||
+                !positiveId(message.windowId) || !isExtensionId(message.peerId)) return false;
+            void (async () => {
+                // Never let an old peer or pre-revocation signal refresh standalone results.
+                if (!currentPair(await freshContext(), message) || disposed) return;
+                pairedDirty = { windowId: message.windowId, peerId: message.peerId };
+                if (active()) onInvalidate([]); // Discard any older snapshot already in flight.
+                schedule();
+            })();
+            return false;
+        }
+        if (message?.action !== LIVE_TAB_RESULTS_CHANGED || Array.isArray(message) ||
             !Object.keys(message).every(key => ['action', 'windowId', 'removedTabIds'].includes(key)) ||
             !(message.windowId === null || positiveId(message.windowId)) || !Array.isArray(message.removedTabIds) ||
             !message.removedTabIds.every(positiveId)) return false;
@@ -172,7 +241,7 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
             return true;
         },
         dispose() {
-            disposed = true; clearTimeout(timer); removed.clear();
+            disposed = true; clearTimeout(timer); removed.clear(); pairedDirty = null;
             api.runtime.onMessage.removeListener(receive);
             doc.removeEventListener('visibilitychange', resume);
             win.removeEventListener('focus', resume);

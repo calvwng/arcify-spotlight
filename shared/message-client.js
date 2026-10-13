@@ -16,12 +16,13 @@ export class SpotlightMessageClient {
     }
 
     // Get suggestions from background script
-    static async getSuggestions(query, mode) {
+    static async getSuggestions(query, mode, bridgeRefresh) {
         try {
             const message = {
                 action: 'getSpotlightSuggestions',
                 query: query.trim(),
-                mode: mode
+                mode: mode,
+                ...(bridgeRefresh ? { bridgeRefresh } : {})
             };
 
             const response = await chrome.runtime.sendMessage(message);
@@ -41,12 +42,13 @@ export class SpotlightMessageClient {
     }
 
     // Get local suggestions only (fast, no autocomplete) - PERF-03 progressive rendering Phase 1
-    static async getLocalSuggestions(query, mode) {
+    static async getLocalSuggestions(query, mode, bridgeRefresh) {
         try {
             const response = await chrome.runtime.sendMessage({
                 action: 'getLocalSuggestions',
                 query: query.trim(),
-                mode: mode
+                mode: mode,
+                ...(bridgeRefresh ? { bridgeRefresh } : {})
             });
             if (response && response.success) {
                 if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);

@@ -19,7 +19,7 @@ export function isSafeUrl(value) {
     catch { return false; }
 }
 const commandFields = {
-    hello: [], snapshot: [], activateSpace: ['spaceId'], activateTab: ['tabId'],
+    hello: [], snapshot: [], invalidate: [], activateSpace: ['spaceId'], activateTab: ['tabId'],
     openTab: ['url', 'spaceId'], navigateTab: ['tabId', 'url'],
     openBookmark: ['spaceId', 'bookmarkId'], launch: ['mode'], startupSuggestion: ['tabId']
 };
