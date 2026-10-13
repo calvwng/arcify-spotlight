@@ -22,6 +22,7 @@ import { Logger } from './logger.js';
 import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
 import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
+import { createOverlaySurface, containOverlayFocus, isComposingKey } from './shared/overlay-surface.js';
 
 /**
  * DORMANT CONTENT SCRIPT ARCHITECTURE
@@ -55,24 +56,8 @@ if (!window.arcifySpotlightTabMode) {
     });
 }
 
-/**
- * SHADOW DOM ISOLATION
- *
- * The overlay used to be appended straight to document.body with its <style> in
- * document.head, which left it fully exposed to the host page's cascade: element-type
- * selectors (the result rows are <button>), site rules that out-specify our bare class
- * selectors, and inherited properties (font, color) flowing in from html/body. Sites with
- * an opinionated design system -- Reddit, StackOverflow -- rendered a visibly different bar.
- *
- * Everything now lives in a shadow root, so page selectors cannot match our nodes at all,
- * and ':host { all: initial }' cuts off inheritance at the boundary.
- *
- * Consequence: document.getElementById() cannot see into the shadow tree. Every lookup of
- * our own DOM must go through the host element.
- */
-const SPOTLIGHT_HOST_ID = 'arcify-spotlight-host';
-const SPOTLIGHT_DIALOG_ID = 'arcify-spotlight-dialog';
-
+// The modal shell uses Shadow DOM for CSS isolation; its input document uses a
+// frame for keyboard isolation. See shared/overlay-surface.js for event ordering.
 let activeOverlay = null;
 let activationQueue = Promise.resolve();
 
@@ -110,47 +95,11 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let activeGroupName = null; // Active tab group name for Arcify context
 
     // CSS styles with default accent color (will be updated)
-    // ':host' -- not ':root' -- because these are injected into the shadow root, where
-    // ':root' matches nothing and every var() below would silently resolve to empty.
-    const accentColorDefinitions = await SpotlightUtils.getAccentColorCSS(activeSpaceColor, ':host');
+    // The UI owns a separate document; accent variables belong on its root.
+    const accentColorDefinitions = await SpotlightUtils.getAccentColorCSS(activeSpaceColor, ':root');
     const spotlightCSS = `
-        /*
-            Cut inheritance off at the shadow boundary. Shadow DOM blocks page SELECTORS
-            from matching our nodes, but inherited properties (font-family, color,
-            letter-spacing, text-transform...) still cross the boundary via the host.
-
-            '!important' is required, not defensive: the host is an ordinary page node, and
-            for normal declarations the outer page's rules beat ':host'. That order reverses
-            for important declarations, so this is what actually wins.
-
-            'display: contents' keeps the host boxless, so layout matches the old
-            append-to-body behaviour exactly.
-        */
-        :host {
-            all: initial !important;
-            display: contents !important;
-        }
-
-        #arcify-spotlight-dialog {
-            margin: 0;
-            position: fixed;
-            /* Not fully centered but this looks better than 50vh */
-            top: calc(35vh);
-            left: 50%;
-            transform: translateX(-50%);
-            border: none;
-            padding: 0;
-            background: transparent;
-            border-radius: 12px;
-            width: 650px;
-            max-width: 90vw;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        }
-
-        #arcify-spotlight-dialog::backdrop {
-            background: transparent;
-        }
-
+        html, body { margin: 0; padding: 0; background: transparent; }
+        body { overflow-x: hidden; }
         .arcify-spotlight-container {
             background: #2D2D2D;
             border-radius: 12px;
@@ -162,14 +111,14 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             overflow: hidden;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input-wrapper {
+        #arcify-spotlight-content .arcify-spotlight-input-wrapper {
             display: flex;
             align-items: center;
             padding: 12px 24px 12px 20px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-search-icon {
+        #arcify-spotlight-content .arcify-spotlight-search-icon {
             width: 20px;
             height: 20px;
             margin-right: 12px;
@@ -177,11 +126,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             flex-shrink: 0;
         }
 
-        /* 
-            Specific CSS directives to override styling on specific pages (stackoverflow, chrome docs).
-            Otherwise the spotlight bar has a white background and some other weird UI.
-        */
-        #arcify-spotlight-dialog .arcify-spotlight-input {
+        #arcify-spotlight-content .arcify-spotlight-input {
             flex: 1 !important;
             background: transparent !important;
             background-color: transparent !important;
@@ -212,12 +157,12 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             box-sizing: border-box !important;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input::placeholder {
+        #arcify-spotlight-content .arcify-spotlight-input::placeholder {
             color: rgba(255, 255, 255, 0.5) !important;
             opacity: 1 !important;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input:focus {
+        #arcify-spotlight-content .arcify-spotlight-input:focus {
             outline: none !important;
             outline-style: none !important;
             outline-width: 0 !important;
@@ -355,64 +300,14 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             font-size: 14px;
         }
 
-        #arcify-spotlight-dialog {
-            animation: arcify-spotlight-show 0.2s ease-out;
-        }
-
-        @keyframes arcify-spotlight-show {
-            from {
-                opacity: 0;
-                transform: translateX(-50%) scale(0.95);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(-50%) scale(1);
-            }
-        }
-
         @media (max-width: 640px) {
-            #arcify-spotlight-dialog {
-                width: 95vw;
-                margin: 20px auto;
-            }
-            
-            #arcify-spotlight-dialog .arcify-spotlight-input {
+            #arcify-spotlight-content .arcify-spotlight-input {
                 font-size: 16px !important;
             }
         }
     `;
 
-    // Create the shadow host. Styles and markup go inside the shadow root, never into
-    // document.head / document.body (see SHADOW DOM ISOLATION above).
-    const host = document.createElement('div');
-    host.id = SPOTLIGHT_HOST_ID;
-    // Same reset as ':host', applied inline as a second line of defence: an inline
-    // '!important' declaration is the strongest author-level rule, so page CSS matching
-    // the host (div {}, * {}) cannot feed inherited values into the shadow tree.
-    host.setAttribute('style', 'all: initial !important; display: contents !important;');
-
-    // Must stay 'open': the e2e suite reaches the overlay through host.shadowRoot.
-    const shadow = host.attachShadow({ mode: 'open' });
-
-    const styleSheet = document.createElement('style');
-    styleSheet.id = 'arcify-spotlight-styles';
-    styleSheet.textContent = spotlightCSS;
-    shadow.appendChild(styleSheet);
-
-    // Accent colors get their own <style> so the async color update can replace the whole
-    // element. The old code regex-patched the ':root {...}' block inside the main sheet;
-    // that regex would now match the ':host' reset rule instead and eat it.
-    const accentStyleSheet = document.createElement('style');
-    accentStyleSheet.id = 'arcify-spotlight-accent-styles';
-    accentStyleSheet.textContent = accentColorDefinitions;
-    shadow.appendChild(accentStyleSheet);
-
-    // Create spotlight dialog
-    const dialog = document.createElement('dialog');
-    dialog.id = SPOTLIGHT_DIALOG_ID;
-    dialog.setAttribute('data-testid', 'spotlight-overlay');
-
-    dialog.innerHTML = `
+    const surface = createOverlaySurface(spotlightCSS, accentColorDefinitions, `
         <div class="arcify-spotlight-container">
             <div class="arcify-spotlight-input-wrapper">
                 <svg class="arcify-spotlight-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -421,6 +316,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
                 </svg>
                 <input
                     type="text"
+                    aria-label="Search or enter URL"
                     class="arcify-spotlight-input"
                     data-testid="spotlight-input"
                     placeholder="${spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'Search or enter URL (opens in new tab)...' : 'Search or enter URL...'}"
@@ -434,16 +330,10 @@ async function activateSpotlightNow(spotlightTabMode, options) {
                 <div class="arcify-spotlight-loading" data-testid="spotlight-loading">Loading...</div>
             </div>
         </div>
-    `;
-
-    shadow.appendChild(dialog);
-    // showModal() later requires the dialog to be connected -- the host must be in the
-    // document before then, and appending it here keeps that ordering obvious.
-    document.body.appendChild(host);
-
-    // Get references to key elements
-    const input = dialog.querySelector('.arcify-spotlight-input');
-    const resultsContainer = dialog.querySelector('.arcify-spotlight-results');
+    `);
+    const { host, dialog, content, frameDocument, accentStyleSheet } = surface;
+    const input = content.querySelector('.arcify-spotlight-input');
+    const resultsContainer = content.querySelector('.arcify-spotlight-results');
     const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
     let actionPending = false;
     let sidebarCommand;
@@ -688,12 +578,18 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     }
 
     // Keyboard navigation
-    input.addEventListener('keydown', SharedSpotlightLogic.createKeyDownHandler(
-        selectionManager,                      // SelectionManager for navigation
-        (selected, event) => handleResultAction(selected, event),  // Enter handler
-        () => closeSpotlight(),               // Escape handler
-        // true                                 // container focus check enabled for overlay mode
-    ));
+    const handleKeyDown = SharedSpotlightLogic.createKeyDownHandler(
+        selectionManager,
+        (selected, event) => handleResultAction(selected, event),
+        () => closeSpotlight()
+    );
+    input.addEventListener('keydown', event => {
+        if (isComposingKey(event) || event.ctrlKey || event.metaKey || event.altKey) return;
+        // Preserve native range selection; Shift+Tab is handled at the frame boundary.
+        if (event.shiftKey && ['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+        handleKeyDown(event);
+    });
+    const removeFocusContainment = containOverlayFocus(frameDocument, closeSpotlight);
 
     // Handle clicks on results
     SharedSpotlightLogic.setupResultClickHandling(
@@ -716,6 +612,8 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         searchQueryId++;
         clearTimeout(prefillTimer);
         removeGlobalCloseListener();
+        removeFocusContainment();
+        surface.dispose();
         sidebarCommand.dispose();
         liveResults.dispose();
         bridgeStatus.dispose();
@@ -763,6 +661,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Show dialog and focus input
     try {
         dialog.showModal();
+        surface.resize();
     } catch (error) {
         disposeSpotlight();
         throw error;
@@ -798,7 +697,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
                 // Update CSS variables by replacing the dedicated accent stylesheet
                 // wholesale -- no regex surgery on the main sheet.
                 accentStyleSheet.textContent =
-                    await SpotlightUtils.getAccentColorCSS(realActiveSpaceColor, ':host');
+                    await SpotlightUtils.getAccentColorCSS(realActiveSpaceColor, ':root');
             }
         } catch (error) {
             Logger.error('[Spotlight] Error updating active space color:', error);

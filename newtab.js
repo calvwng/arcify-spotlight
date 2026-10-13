@@ -17,6 +17,7 @@ import { shouldCloseNewTab } from './shared/bridge-navigation-ui.js';
 import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
 import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
 import { mountStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
+import { mountActiveNewTabReuse } from './shared/active-newtab-reuse.js';
 
 // Initialize spotlight on page load
 // Initialize spotlight on page load
@@ -354,6 +355,7 @@ export async function initializeSpotlight() {
         },
         onRefresh: bridgeRefresh => typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh)
     });
+    const activeNewTabReuse = mountActiveNewTabReuse({ isReady: () => !disposed && container.isConnected });
     const dispose = () => {
         if (disposed) return;
         disposed = true;
@@ -361,6 +363,7 @@ export async function initializeSpotlight() {
         startupSuggestion.dispose();
         sidebarCommand.dispose();
         liveResults.dispose();
+        activeNewTabReuse.dispose();
         bridgeStatus.dispose();
     };
     window.addEventListener('pagehide', dispose, { once: true });

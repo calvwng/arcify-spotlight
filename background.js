@@ -18,6 +18,9 @@ import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-prov
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
 import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, createArcifyResultUpdates, installLiveTabResultUpdates } from './shared/live-tab-results.js';
+import { createActiveNewTabReuse, isBrowserNewTabAlias, isSameActiveTab } from './shared/active-newtab-reuse.js';
+
+const activeNewTabReuse = createActiveNewTabReuse(chrome);
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -168,7 +171,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // All extensions may reach the manifest endpoint; only the paired ID may use it.
 const recentLaunches = new Map();
-const launchQueues = new Map();
 function pairedLaunch(message, peerId) {
     const key = `${peerId}:${message.requestId}`;
     const signature = JSON.stringify([message.windowId, message.mode]);
@@ -177,16 +179,13 @@ function pairedLaunch(message, peerId) {
         if (existing.signature !== signature) throw Object.assign(new Error('Request ID was already used for another launch.'), { code: 'REQUEST_ID_REUSED' });
         return existing.promise;
     }
-    const previous = launchQueues.get(message.windowId) || Promise.resolve();
-    const promise = previous.catch(() => {}).then(async () => {
+    const promise = Promise.resolve().then(async () => {
         if (await arcifyBridge.getPeerId() !== peerId) throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
-        return injectSpotlightScript(message.mode, message.windowId, { ensureOpen: true });
+        return injectSpotlightScript(message.mode, message.windowId, { ensureOpen: true, expectedPeerId: peerId });
     });
-    launchQueues.set(message.windowId, promise);
     recentLaunches.set(key, { signature, promise });
     // Bounded lifetime-local replay guard, not a persistent browsing log.
     if (recentLaunches.size > 100) recentLaunches.delete(recentLaunches.keys().next().value);
-    promise.finally(() => { if (launchQueues.get(message.windowId) === promise) launchQueues.delete(message.windowId); }).catch(() => {});
     return promise;
 }
 
@@ -274,14 +273,37 @@ function supportsContentScripts(url) {
     return true;
 }
 
+// All entry points share the same per-window queue. Resolve a shortcut's origin
+// before waiting, so changing focused windows cannot retarget a queued command.
+const activationQueues = new Map();
+async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensureOpen = false, expectedPeerId = null } = {}) {
+    const allowDisabledFallback = windowId === null;
+    if (windowId === null) {
+        try {
+            const [source] = await chrome.tabs.query({ active: true, currentWindow: true });
+            windowId = source?.windowId;
+        } catch { return false; }
+    }
+    if (!isWindowId(windowId)) return false;
+    const previous = activationQueues.get(windowId) || Promise.resolve();
+    const promise = previous.catch(() => {}).then(async () => {
+        if (expectedPeerId && await arcifyBridge.getPeerId() !== expectedPeerId)
+            throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
+        return activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback });
+    });
+    activationQueues.set(windowId, promise);
+    promise.finally(() => { if (activationQueues.get(windowId) === promise) activationQueues.delete(windowId); }).catch(() => {});
+    return promise;
+}
+
 // Helper function to activate spotlight via content script messaging
-async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensureOpen = false } = {}) {
+async function activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback }) {
     try {
         // Check if spotlight is enabled
         const settings = await getSettings();
         if (!settings.enableSpotlight) {
             Logger.log("Spotlight is disabled in settings.");
-            if (windowId) return false;
+            if (!allowDisabledFallback) return false;
 
             if (spotlightTabMode === SpotlightTabMode.NEW_TAB) {
                 Logger.log("Opening default new tab instead of spotlight new tab.");
@@ -299,11 +321,20 @@ async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensure
         // Get the active tab
         const [tab] = await chrome.tabs.query({ active: true, ...(windowId ? { windowId } : { currentWindow: true }) });
         if (tab) {
+            // tabs.create may finish before its new helper has committed. Do not
+            // multiply it while loading, or interfere with a user navigation to it.
+            if (tab.pendingUrl?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html')) return false;
+            // Reuse only the active source. Do this before any overlay teardown and
+            // never focus/reinitialize the document or overwrite an omnibox draft.
+            if (tab.url?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html'))
+                return await isSameActiveTab(chrome, tab);
+            if (isBrowserNewTabAlias(tab.url)) {
+                return await activeNewTabReuse.reuseOrFallback(tab,
+                    isCurrent => fallbackToChromeTabs(spotlightTabMode, windowId, isCurrent));
+            }
             // Let the target content script own its lifecycle. Closing it here races its
             // delayed teardown and also prevents the normal shortcut from toggling it.
             await closeSpotlightInTrackedTabs(windowId, tab.id);
-            // Reuse an already-open Spotlight fallback rather than multiplying helper tabs.
-            if (tab.url?.split(/[?#]/)[0] === chrome.runtime.getURL('newtab.html')) return true;
             if (!supportsContentScripts(tab.url)) {
                 Logger.log("Tab URL doesn't support content scripts, opening custom new tab directly:", tab.url);
                 return await fallbackToChromeTabs(spotlightTabMode, windowId);
@@ -338,9 +369,10 @@ async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensure
 }
 
 // Helper function for Chrome tab fallback when spotlight injection fails
-async function fallbackToChromeTabs(spotlightTabMode, windowId = null) {
+async function fallbackToChromeTabs(spotlightTabMode, windowId = null, isCurrent = null) {
     try {
         await closeSpotlightInTrackedTabs(windowId);
+        if (isCurrent && !await isCurrent()) return false;
 
         Logger.log(`Falling back to custom new tab page for mode: ${spotlightTabMode}`);
         await chrome.tabs.create({ url: chrome.runtime.getURL('newtab.html'), active: true, ...(windowId ? { windowId } : {}) });
@@ -366,11 +398,12 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     // IMPORTANT: This listener must NOT be async. An async listener returns a Promise
     // (truthy), which Chrome interprets as "I will call sendResponse later", stealing
     // the response channel from other listeners and breaking message passing.
-    if (request.command === "toggleSpotlight") {
-        injectSpotlightScript(SpotlightTabMode.CURRENT_TAB);
-    } else if (request.command === "toggleSpotlightNewTab") {
-        injectSpotlightScript(SpotlightTabMode.NEW_TAB);
-    }
+    const mode = request.command === 'toggleSpotlight' ? SpotlightTabMode.CURRENT_TAB
+        : request.command === 'toggleSpotlightNewTab' ? SpotlightTabMode.NEW_TAB : null;
+    if (!mode) return false;
+    injectSpotlightScript(mode).then(opened => sendResponse({ success: opened === true }),
+        () => sendResponse({ success: false }));
+    return true;
 });
 
 // Track tab activation to close spotlights

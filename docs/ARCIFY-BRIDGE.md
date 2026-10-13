@@ -78,8 +78,26 @@ neither a rebuild nor a change to Arcify's pinned companion runtime revision.
   is open, including during pending close animation or after worker restart; it is
   not a toggle. Normal Spotlight shortcuts retain their toggle behavior. The
   original Arcify New Tab button is unchanged.
+- **Repeat Spotlight's New Tab command on a New Tab:** If the active
+  `chrome://newtab/` page is already Spotlight, it is reused from the first
+  command. Spotlight authenticates its ready renderer with a one-use nonce and
+  fresh browser tab/window identity before treating the browser alias as its own.
+  Reuse preserves the existing document, query, selection and focus; it does not
+  navigate, focus the input, close tabs or find an inactive helper elsewhere.
+  Concurrent shortcut, internal and sidebar launches are serialized in their
+  originating window. Missing or other New Tab providers retain the ordinary
+  helper fallback. A loading, navigating, moved or changed source aborts instead
+  of opening a helper on stale context. This does not change shortcut assignments.
 - **Use group sync off:** All the above use Arcify's model, not group names/IDs.
   Optional native groups remain Arcify's projection when sync is enabled.
+
+The page overlay keeps its search UI in a source-less `about:blank` frame inside
+its modal dialog. This separates typing from the host page's keyboard event path,
+including earlier document/window shortcut listeners. Trusted input handlers still
+run in Spotlight's original content-script context; sidebar actions do not use a
+message relay or gain broader sender permissions. Tab/Shift+Tab stay within the
+overlay, Escape dismisses it, and ordinary text-editing modifiers remain available.
+New Tab pages keep their existing UI and the browser's initial omnibox focus.
 
 Search also retains ordinary bookmarks, history, top sites, and autocomplete.
 Workspace tab order comes from Arcify; global Chrome-pinned favorites and unowned

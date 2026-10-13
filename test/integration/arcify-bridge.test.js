@@ -223,7 +223,9 @@ describe('paired reverse launch', () => {
         expect(await callExternal(launch({ mode: 'current-tab' }))).toMatchObject({ ok: false, error: { code: 'REQUEST_ID_REUSED' } });
     });
     it('reuses the active helper page for different launch IDs', async () => {
-        chromeMock.tabs.query.mockResolvedValue([{ id: 42, windowId: 2, url: chromeMock.runtime.getURL('newtab.html') }]);
+        const helper = { id: 42, windowId: 2, active: true, url: chromeMock.runtime.getURL('newtab.html') };
+        chromeMock.tabs.query.mockResolvedValue([helper]);
+        chromeMock.tabs.get.mockResolvedValue(helper);
         expect((await callExternal(launch())).ok).toBe(true);
         expect((await callExternal(launch({ requestId: 'next-id' }))).ok).toBe(true);
         expect(chromeMock.tabs.create).not.toHaveBeenCalled();
@@ -231,8 +233,11 @@ describe('paired reverse launch', () => {
     });
     it('serializes concurrent launches before checking the active helper', async () => {
         let currentUrl = 'chrome://settings';
-        chromeMock.tabs.query.mockImplementation(async () => [{ id: 42, windowId: 2, url: currentUrl }]);
-        chromeMock.tabs.create.mockImplementation(async options => { currentUrl = options.url; return { id: 50 }; });
+        let currentId = 42;
+        const current = () => ({ id: currentId, windowId: 2, active: true, url: currentUrl });
+        chromeMock.tabs.query.mockImplementation(async () => [current()]);
+        chromeMock.tabs.get.mockImplementation(async () => current());
+        chromeMock.tabs.create.mockImplementation(async options => { currentUrl = options.url; currentId = 50; return current(); });
         const results = await Promise.all([callExternal(launch()), callExternal(launch({ requestId: 'next-id' }))]);
         expect(results.every(result => result.ok)).toBe(true);
         expect(chromeMock.tabs.create).toHaveBeenCalledTimes(1);

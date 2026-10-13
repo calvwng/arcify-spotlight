@@ -20,11 +20,11 @@ import {
   waitForExtension,
   openNewTabPage,
   overlaySelector,
-  OVERLAY_HOST_SELECTOR
+  getOverlayFrame
 } from '../setup.js';
 
 // NOTE: newtab.html tests use plain selectors -- that page has no shadow root.
-// The overlay tests (E2E-04, E2E-05) must pierce into #arcify-spotlight-host's shadow root.
+// Overlay tests enter the native modal shell's frame document for UI interactions.
 
 // Set DEBUG=true env var to add delays between actions and run with visible browser
 const DEBUG = process.env.DEBUG === 'true';
@@ -380,18 +380,19 @@ describe('Spotlight E2E Tests', () => {
       await wait();
 
       // Verify we can interact with spotlight
-      const input = await page.$(overlaySelector('[data-testid="spotlight-input"]'));
+      const overlay = await getOverlayFrame(page);
+      const input = await overlay.$('[data-testid="spotlight-input"]');
       assert.ok(input, 'Spotlight input should be available');
 
       // Type a query to verify functionality
-      await page.type(overlaySelector('[data-testid="spotlight-input"]'), 'test');
+      await overlay.type('[data-testid="spotlight-input"]', 'test');
 
       // Wait for results
-      await page.waitForSelector(overlaySelector('[data-testid="spotlight-result"]'), {
+      await overlay.waitForSelector('[data-testid="spotlight-result"]', {
         timeout: 5000
       });
 
-      const results = await page.$$(overlaySelector('[data-testid="spotlight-result"]'));
+      const results = await overlay.$$('[data-testid="spotlight-result"]');
       assert.ok(results.length > 0, 'Should show results in overlay mode');
 
       await page.close();
@@ -512,18 +513,19 @@ describe('Spotlight E2E Tests', () => {
       await wait();
 
       // 4. Search for the grouped tab by its title
-      await searchPage.type(overlaySelector('[data-testid="spotlight-input"]'), 'Example');
+      const overlay = await getOverlayFrame(searchPage);
+      await overlay.type('[data-testid="spotlight-input"]', 'Example');
 
       // Wait for results to appear (instant suggestion first)
-      await searchPage.waitForSelector(overlaySelector('[data-testid="spotlight-result"]'), {
+      await overlay.waitForSelector('[data-testid="spotlight-result"]', {
         timeout: 5000
       });
 
       // Wait for async tab results from background (150ms debounce + query time)
       // Poll for the chip to appear as async results replace/augment the instant suggestion
-      await searchPage.waitForFunction(
-        hostSelector => {
-          const root = document.querySelector(hostSelector)?.shadowRoot;
+      await overlay.waitForFunction(
+        () => {
+          const root = document;
           if (!root) return false;
           const results = root.querySelectorAll('[data-testid="spotlight-result"]');
           for (const result of results) {
@@ -531,13 +533,12 @@ describe('Spotlight E2E Tests', () => {
           }
           return false;
         },
-        { timeout: 8000, polling: 200 },
-        OVERLAY_HOST_SELECTOR
+        { timeout: 8000, polling: 200 }
       );
 
       // 5. Find the result with the chip and verify its content
-      const chipData = await searchPage.evaluate(hostSelector => {
-        const root = document.querySelector(hostSelector)?.shadowRoot;
+      const chipData = await overlay.evaluate(() => {
+        const root = document;
         if (!root) return { found: false };
         const results = root.querySelectorAll('[data-testid="spotlight-result"]');
         for (const result of results) {
@@ -553,7 +554,7 @@ describe('Spotlight E2E Tests', () => {
           }
         }
         return { found: false };
-      }, OVERLAY_HOST_SELECTOR);
+      });
 
       assert.ok(
         chipData.found,
@@ -628,9 +629,10 @@ describe('Spotlight E2E Tests', () => {
       await wait();
 
       // Search for the non-grouped tab
-      await searchPage.type(overlaySelector('[data-testid="spotlight-input"]'), 'Example');
+      const overlay = await getOverlayFrame(searchPage);
+      await overlay.type('[data-testid="spotlight-input"]', 'Example');
 
-      await searchPage.waitForSelector(overlaySelector('[data-testid="spotlight-result"]'), {
+      await overlay.waitForSelector('[data-testid="spotlight-result"]', {
         timeout: 5000
       });
 
@@ -638,8 +640,8 @@ describe('Spotlight E2E Tests', () => {
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // Verify NO chip is present on results for non-grouped tabs
-      const hasChip = await searchPage.evaluate(hostSelector => {
-        const root = document.querySelector(hostSelector)?.shadowRoot;
+      const hasChip = await overlay.evaluate(() => {
+        const root = document;
         if (!root) return false;
         const results = root.querySelectorAll('[data-testid="spotlight-result"]');
         for (const result of results) {
@@ -648,7 +650,7 @@ describe('Spotlight E2E Tests', () => {
           }
         }
         return false;
-      }, OVERLAY_HOST_SELECTOR);
+      });
 
       assert.ok(
         !hasChip,
