@@ -97,7 +97,8 @@ including earlier document/window shortcut listeners. Trusted input handlers sti
 run in Spotlight's original content-script context; sidebar actions do not use a
 message relay or gain broader sender permissions. Tab/Shift+Tab stay within the
 overlay, Escape dismisses it, and ordinary text-editing modifiers remain available.
-New Tab pages keep their existing UI and the browser's initial omnibox focus.
+New Tab UI and focus behavior are unchanged; initial omnibox focus remains a
+manual check.
 
 Search also retains ordinary bookmarks, history, top sites, and autocomplete.
 Workspace tab order comes from Arcify; global Chrome-pinned favorites and unowned
