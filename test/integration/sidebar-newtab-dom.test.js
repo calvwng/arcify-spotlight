@@ -170,6 +170,79 @@ describe('real newtab sidebar and startup DOM wiring', () => {
         trustedKey('ArrowDown'); trustedKey('Enter');
         expect(normalActions()).toHaveLength(1);
     });
+    it('auto-selects a fuzzy sidebar action above retained web search, with the visible panel icon', async () => {
+        await open(); type('opn arcfi');
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'arcify-sidebar-command' });
+        const rows = [...page.resultsContainer.querySelectorAll('[data-result-type]')];
+        expect(rows.map(row => row.dataset.resultType)).toEqual(['arcify-sidebar-command', 'search-query']);
+        expect(decodeURIComponent(rows[0].querySelector('img').getAttribute('src'))).toContain('M9 4v16');
+        trustedKey('Enter');
+        expect(commands()).toHaveLength(1); expect(normalActions()).toHaveLength(0);
+        expect(window.close).not.toHaveBeenCalled();
+    });
+    it('lets ArrowDown choose web search and retains that choice through async local results', async () => {
+        await open(); type('opn arcfi'); trustedKey('ArrowDown');
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'search-query' });
+        await vi.waitFor(() => expect(page.resultsContainer.querySelectorAll('[data-result-type]')).toHaveLength(3));
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'search-query' });
+        expect(page.input.value).toBe('opn arcfi');
+        trustedKey('Enter');
+        expect(normalActions()).toHaveLength(1); expect(commands()).toHaveLength(0);
+    });
+    it.each(['Home', 'ArrowUp'])('does not steal explicit %s selection when sidebar capability arrives late', async key => {
+        available = false; await open(); type('open arcify'); trustedKey(key);
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'search-query' });
+        available = true; await page.sidebarCommand.prepare();
+        expect(commandRow()).not.toBeNull();
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'search-query' });
+        expect(commandRow().classList.contains('selected')).toBe(false);
+    });
+    it('can promote a late capability before the user has made a manual choice', async () => {
+        available = false; await open(); type('open arcify');
+        available = true; await page.sidebarCommand.prepare();
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'arcify-sidebar-command' });
+    });
+    it('keeps genuine query and manually selected identity through URL preview and later replacement', async () => {
+        await open();
+        let resolveAutocomplete;
+        const original = chromeMock.runtime.sendMessage.getMockImplementation();
+        chromeMock.runtime.sendMessage.mockImplementation((message, ...args) => {
+            if (message.action === 'getAutocompleteSuggestions') return new Promise(resolve => resolveAutocomplete = resolve);
+            return original(message, ...args);
+        });
+        type('open arcify');
+        await vi.waitFor(() => expect(resolveAutocomplete).toBeTypeOf('function'));
+        trustedKey('ArrowDown'); trustedKey('ArrowDown');
+        expect(page.input.value).toBe(ordinary.url);
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'history', url: ordinary.url });
+        initialResults = [{ ...ordinary, title: 'Fresh title', score: 99 }];
+        resolveAutocomplete({ success: true, results: [{ type: 'autocomplete-suggestion', title: 'Open Arcify' }] });
+        await vi.waitFor(() => expect(page.selectionManager.getSelectedResult()?.title).toBe('Fresh title'));
+        expect(page.input.value).toBe(ordinary.url);
+        expect(commandRow()).not.toBeNull();
+        expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ action: 'getSpotlightSuggestions', query: 'open arcify' }));
+    });
+    it('auto-selects matched workspace actions but never promotes stale actions after new unrelated input', async () => {
+        await open();
+        const workspace = { type: 'arcify-space', title: 'Pair Work', metadata: { matchScore: 0.8,
+            arcifyBridge: { kind: 'space', peerId: PEER, windowId: 2, spaceId: 'work' } } };
+        const original = chromeMock.runtime.sendMessage.getMockImplementation();
+        chromeMock.runtime.sendMessage.mockImplementation((message, ...args) => {
+            if (message.action === 'getLocalSuggestions') return Promise.resolve({ success: true, results: [workspace] });
+            return original(message, ...args);
+        });
+        type('pair wrok');
+        await vi.waitFor(() => expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'arcify-space' }));
+        expect([...page.resultsContainer.querySelectorAll('[data-result-type]')].map(row => row.dataset.resultType)).toEqual(['arcify-space', 'search-query']);
+        type('completely unrelated');
+        expect(page.selectionManager.getSelectedResult()).toMatchObject({ type: 'search-query', metadata: { query: 'completely unrelated' } });
+        expect(page.resultsContainer.querySelector('[data-result-type="arcify-space"]')).toBeNull();
+    });
+    it.each(['sidebar documentation', 'https://arcify.com', 'qzxv'])('keeps non-command input %j on its ordinary instant result', async query => {
+        await open(); type(query);
+        expect(commandRow()).toBeNull();
+        expect(page.selectionManager.getSelectedResult().type).toBe(query.startsWith('https:') ? 'url-suggestion' : 'search-query');
+    });
     it('revocation removes startup command immediately and late page offers cannot revive a disposed page', async () => {
         await open(); offer(); chromeMock.storage.local.get.mockResolvedValue({});
         storageChanged({ arcifyBridgePeerId: { newValue: '' } }, 'local');

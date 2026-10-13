@@ -17,6 +17,7 @@ import { BRIDGE_TYPE, trustedSender, validateRequest, responseFor } from './shar
 import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
+import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, installLiveTabResultUpdates } from './shared/live-tab-results.js';
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -89,11 +90,21 @@ async function bridgeContext(message, sender) {
 
 async function searchEngineForSender(message, sender) {
     const peerId = await arcifyBridge.getPeerId();
-    if (!peerId) return backgroundSearchEngine;
+    const sourceTabId = sender.tab?.id ?? message.tabId;
+    const helperTabId = isNewTabSender(sender) && Number.isSafeInteger(sourceTabId) && sourceTabId > 0 ? sourceTabId : null;
+    if (!peerId) {
+        if (!helperTabId) return backgroundSearchEngine;
+        const provider = new BackgroundDataProvider({ excludeTabId: helperTabId, preserveTabIdentities: true });
+        provider.autocompleteProvider = backgroundDataProvider.autocompleteProvider;
+        return new SearchEngine(provider);
+    }
     const context = await bridgeContext(message, sender);
     const snapshot = await arcifyBridge.snapshot(context.windowId, peerId);
     if (!snapshot) throw new Error('Arcify was disconnected. Search again.');
-    return new SearchEngine(new ArcifyBridgeProvider(snapshot, backgroundDataProvider, peerId));
+    // The exact calling helper is already visible. Other same-URL/title tabs are
+    // independent choices and remain searchable. Never guess from the active tab.
+    const excludeTabId = helperTabId ? context.tabId : null;
+    return new SearchEngine(new ArcifyBridgeProvider(snapshot, backgroundDataProvider, peerId, { excludeTabId }));
 }
 
 function isNewTabSender(sender) {
@@ -180,20 +191,21 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
 
 // Track tabs that have spotlight open for efficient closing
-const spotlightOpenTabs = new Set();
+const spotlightOpenTabs = createLiveOverlayRegistry(chrome);
+installLiveTabResultUpdates(chrome, () => spotlightOpenTabs.getIds());
 
 // Close spotlight in tracked tabs only
 async function closeSpotlightInTrackedTabs(windowId = null, exceptTabId = null) {
     try {
         const targetIds = windowId ? new Set((await chrome.tabs.query({ windowId })).map(tab => tab.id)) : null;
-        const closingIds = Array.from(spotlightOpenTabs).filter(id => id !== exceptTabId && (!targetIds || targetIds.has(id)));
+        const closingIds = Array.from(await spotlightOpenTabs.getIds()).filter(id => id !== exceptTabId && (!targetIds || targetIds.has(id)));
         const closePromises = closingIds.map(tabId =>
             chrome.tabs.sendMessage(tabId, { action: 'closeSpotlight' }).catch(() => {
-                spotlightOpenTabs.delete(tabId);
+                spotlightOpenTabs.remove([tabId]);
             })
         );
         await Promise.all(closePromises);
-        for (const id of closingIds) spotlightOpenTabs.delete(id);
+        await spotlightOpenTabs.remove(closingIds);
     } catch (error) {
         Logger.error('[Background] Error closing spotlight in tracked tabs:', error);
     }
@@ -270,8 +282,8 @@ async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensure
                 if (response && response.success) {
                     // Rebuild tracking even after a worker restart. Shortcut toggles
                     // may intentionally close the UI; paired launches must leave it open.
-                    if (response.open !== false) spotlightOpenTabs.add(tab.id);
-                    else spotlightOpenTabs.delete(tab.id);
+                    if (response.open !== false) await spotlightOpenTabs.add(tab.id);
+                    else await spotlightOpenTabs.remove([tab.id]);
                     return true;
                 }
                 return await fallbackToChromeTabs(spotlightTabMode, windowId);
@@ -329,14 +341,18 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Clean up spotlight tracking for closed tabs
 chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
-    if (spotlightOpenTabs.has(tabId)) {
-        spotlightOpenTabs.delete(tabId);
-    }
+    await spotlightOpenTabs.remove([tabId]);
 });
 
 // Main message listener for spotlight operations
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'openNewTab') {
+    if (message.action === LIVE_TAB_CONTEXT) {
+        if (sender.id !== chrome.runtime.id) return false;
+        Promise.all([bridgeContext(message, sender), arcifyBridge.getPeerId()]).then(([context, peerId]) => sendResponse({ success: true,
+            windowId: context.windowId, sourceTabId: context.tabId, allWindows: !peerId }),
+            () => sendResponse({ success: false }));
+        return true;
+    } else if (message.action === 'openNewTab') {
         chrome.tabs.create({ url: message.url });
         sendResponse({ success: true });
         return false;
@@ -588,7 +604,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 sendResponse({ success: true });
             } catch (error) {
                 Logger.error('[Background] Error handling spotlight result:', error);
-                sendResponse({ success: false, error: error.message });
+                sendResponse({ success: false, error: error.message, errorCode: error.code });
             }
         })();
         return true;
@@ -600,7 +616,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return false;
     } else if (message.action === 'spotlightClosed') {
         if (sender.tab && sender.tab.id) {
-            spotlightOpenTabs.delete(sender.tab.id);
+            spotlightOpenTabs.remove([sender.tab.id]);
         }
         return false;
     } else if (message.action === 'activatePinnedTab') {

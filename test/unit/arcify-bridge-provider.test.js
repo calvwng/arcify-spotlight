@@ -211,6 +211,27 @@ describe('Arcify bridge snapshot provider', () => {
         expect(api.storage.local.set).not.toHaveBeenCalled();
     });
 
+    it('hides only generic exact paired startup helper suggestions without changing saved identities', () => {
+        const helper = `chrome-extension://${PEER_ID}/startup-launcher.html`;
+        const hidden = [ResultType.HISTORY, ResultType.BOOKMARK, ResultType.TOP_SITE].map((type, index) => new SearchResult({
+            type, title: 'Open Arcify sidebar', url: helper + ['?source=startup', '#start', ''][index], metadata: { bookmarkId: 'ordinary-helper' }
+        }));
+        const retained = [
+            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: 'https://example.test/launcher', metadata: { bookmarkId: 'web' } }),
+            new SearchResult({ type: ResultType.HISTORY, title: 'Open Arcify sidebar', url: `chrome-extension://${'c'.repeat(32)}/startup-launcher.html` }),
+            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: `chrome-extension://${PEER_ID}/options.html`, metadata: { bookmarkId: 'options' } }),
+            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: helper + '/other', metadata: { bookmarkId: 'other-path' } }),
+            new SearchResult({ type: ResultType.BOOKMARK, title: 'Saved authoritative identity', url: helper,
+                metadata: { bookmarkId: 'saved', arcifyBridge: { kind: 'bookmark', peerId: PEER_ID, windowId: 11, spaceId: 'work', bookmarkId: 'saved' } } })
+        ];
+        const before = structuredClone([...hidden, ...retained]);
+        expect(provider.deduplicateResults([...hidden, ...retained])).toEqual([retained[4], ...retained.slice(0, 4)]);
+        expect([...hidden, ...retained]).toEqual(before);
+        expect(api.storage.local.set).not.toHaveBeenCalled();
+        const unpaired = new ArcifyBridgeProvider(snapshot(), native);
+        expect(unpaired.deduplicateResults([hidden[0]])).toEqual([hidden[0]]);
+    });
+
     it('supports matching workspace names without mutating or caching the snapshot', async () => {
         const before = structuredClone(provider.snapshot);
         const results = await provider.getOpenTabs('personal');

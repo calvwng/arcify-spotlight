@@ -193,7 +193,19 @@ successful, explicitly paired capability check. No manifest permissions were add
 “Open Arcify sidebar” is an ordinary result in the new-tab page and HTTP(S) overlay.
 It appears after ordinary empty-query results and is never the sole default
 empty-query selection unless the startup offer below was accepted. Search for
-“Arcify sidebar,” select it with the arrow keys, or click it. Its native Enter/click
+“Arcify sidebar,” or a close partial/typo such as “opn arcfi.” Matched sidebar
+commands and already-matched workspace-switch actions appear ahead of the ordinary
+**Search for …** row, which remains available below them. Ordinary tab/bookmark
+navigation rows keep their existing data ranking. Unrelated or URL-like queries
+keep the normal search/URL behavior. The sidebar command has a distinct split-panel
+icon rather than a magnifying glass.
+
+The best matching action is initially selected for Enter. Explicit keyboard or
+pointer selection takes precedence over late capability/search updates, including
+navigation keys that remain at the current row. Result refreshes preserve stable
+identity rather than comparing changing scores or preview text. Typing a new query
+resets that choice; merely previewing a selected URL does not change the search
+query. Select with the arrow keys or click. Its native Enter/click
 handler directly sends `{type: 'arcify-sidebar', version: 1, requestId}` to the cached
 paired Arcify ID on the original gesture stack, without an awaited lookup, Spotlight
 background relay, generic navigation action, or mutation queue. Synthetic events
@@ -230,9 +242,37 @@ invalidate cached readiness, and stale preparation/action replies cannot revive 
 
 Chrome may initially focus its native omnibox on a new tab. The startup offer does
 not steal that focus: bare Enter at browser startup is therefore not guaranteed to
-invoke Spotlight. Focus Spotlight's input or click its command. Real paired-browser
-acceptance of native gestures, cold-worker delivery, and native side-panel visibility
-remains pending; mocked module/DOM tests do not establish that browser behavior.
+invoke Spotlight. Focus Spotlight's input or click its command. The prior exact
+pair Arcify `6081313` / Spotlight `6fae7bb` passed all 19 checks in
+[paired Chrome run 38346668819](https://github.com/calvwng/arcify/actions/runs/38346668819),
+including genuine warm/cold-worker gestures, native rendering and security rejection.
+That run explicitly focused Spotlight before Enter; it did not test browser-startup
+focus or Helium. Later search/freshness changes require their own exact-head run;
+see the linked draft PRs for current results. Mocked module/DOM tests remain distinct
+from this browser evidence.
+
+## Live-tab results and helper identity
+
+The current Spotlight new-tab/helper page is excluded by its exact browser tab ID;
+it is not a useful “Switch to Tab” destination for itself. Other live tabs remain
+separate even when both are titled **New Tab** or have the same URL. Titles and URLs
+are never used to discard an authoritative live-tab identity.
+
+Relevant removal, replacement and cross-window movement events invalidate the live
+list. Visible pages coalesce refreshes, preserve the user's typed query/selection,
+and reject late responses; hidden pages refresh on return. A stale-action rejection
+evicts the invalid tab choice and refreshes without replaying the action or silently
+selecting an unrelated fallback under held Enter. An exact known Arcify startup
+helper URL is not offered as a generic paired navigation result alongside the real
+sidebar command; this is not a blanket filter on similarly named bookmarks/pages.
+
+Paired tab refreshes are scoped to the source window. Standalone new-tab/helper
+results can span windows and refresh accordingly; standalone content overlays still
+need a new query or focus return for changes made only in another window. Browser
+events do not cover every Arcify-only logical membership/order change when native
+group sync is off; those require a fresh query/focus snapshot until a separate
+paired invalidation signal is implemented. Spotlight does not maintain a competing
+workspace database.
 
 ## Lifecycle, disconnect, and failures
 

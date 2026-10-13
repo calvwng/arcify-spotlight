@@ -4,10 +4,11 @@ import { SearchResult, ResultType } from '../search-types.js';
 import { FuseSearchService } from '../fuse-search-service.js';
 
 export class ArcifyBridgeProvider extends BackgroundDataProvider {
-    constructor(snapshot, nativeProvider, peerId = null) {
+    constructor(snapshot, nativeProvider, peerId = null, { excludeTabId = null } = {}) {
         super();
         this.snapshot = snapshot;
         this.peerId = peerId;
+        this.excludeTabId = excludeTabId;
         this.autocompleteProvider = nativeProvider.autocompleteProvider;
         this.spaces = new Map(snapshot.spaces.map(space => [space.id, space]));
     }
@@ -34,7 +35,7 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
         const orderedIds = this.snapshot.spaces.flatMap(space => space.tabIds);
         const listed = new Set(orderedIds);
         const orderedTabs = [...orderedIds.map(id => tabById.get(id)), ...this.snapshot.tabs.filter(tab => !listed.has(tab.id))];
-        const results = orderedTabs.filter(tab => tab?.url).map(tab => new SearchResult({
+        const results = orderedTabs.filter(tab => tab?.url && tab.id !== this.excludeTabId).map(tab => new SearchResult({
             type: tab.pinned ? ResultType.PINNED_TAB : ResultType.OPEN_TAB,
             title: tab.title || tab.url, url: tab.url,
             metadata: { ...this.metadata('tab', tab), tabId: tab.id, windowId: tab.windowId,
@@ -70,7 +71,14 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
         const matchedBookmarkTabs = new Set(results.filter(result => result.metadata?.arcifyBridge?.kind === 'bookmark' && result.metadata.tabId).map(result => result.metadata.tabId));
         for (const result of results) {
             const owner = result.metadata?.arcifyBridge;
-            if (!owner) { ordinary.push(result); continue; }
+            if (!owner) {
+                // The paired launcher is a control surface, already represented by
+                // the gesture-safe command. Hide only this exact helper suggestion;
+                // saved bookmark data, unrelated extension pages and names are intact.
+                const helperUrl = this.peerId && `chrome-extension://${this.peerId}/startup-launcher.html`;
+                if (helperUrl && result.url?.split(/[?#]/)[0] === helperUrl) continue;
+                ordinary.push(result); continue;
+            }
             if (owner.kind === 'tab' && matchedBookmarkTabs.has(owner.tabId)) continue;
             const key = `${owner.kind}:${owner.spaceId}:${owner.tabId ?? owner.bookmarkId ?? ''}`;
             if (!seen.has(key)) { seen.add(key); bridge.push(result); }

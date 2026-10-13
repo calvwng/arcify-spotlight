@@ -13,6 +13,13 @@
  */
 
 import { SpotlightUtils } from './ui-utilities.js';
+import { ResultType } from './search-types.js';
+
+export const isActionResult = result => result?.type === 'arcify-sidebar-command' ||
+    (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
+
+const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
+    ? result.metadata.matchScore : 0;
 
 export class SharedSpotlightLogic {
 
@@ -22,7 +29,7 @@ export class SharedSpotlightLogic {
      * @param {Array} asyncSuggestions - Array of async suggestion results
      * @returns {Array} Combined and deduplicated results
      */
-    static combineResults(instantSuggestion, asyncSuggestions) {
+    static combineResults(instantSuggestion, asyncSuggestions, { actions = [], query = '', preferredAction = null } = {}) {
         const combined = [];
 
         // Add instant suggestion first (if exists)
@@ -38,6 +45,19 @@ export class SharedSpotlightLogic {
             }
         }
 
+        combined.push(...actions);
+
+        // Commands are matched before reaching this renderer. Promote only these
+        // explicit action types, keeping web search and all navigation results.
+        // URL input and empty-query defaults retain their established ordering.
+        if (query.trim() && instantSuggestion?.type === ResultType.SEARCH_QUERY) {
+            const matchedActions = combined.filter(isActionResult)
+                .sort((a, b) => actionMatchScore(b) - actionMatchScore(a));
+            return [...matchedActions, ...combined.filter(result => !isActionResult(result))];
+        }
+        if (preferredAction && combined.includes(preferredAction) && isActionResult(preferredAction)) {
+            return [preferredAction, ...combined.filter(result => result !== preferredAction)];
+        }
         return combined;
     }
 

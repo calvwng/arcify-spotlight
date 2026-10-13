@@ -137,7 +137,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await pause(220);
         expectOpen();
         expect(dialog().querySelector('.arcify-bridge-status')).not.toBeNull();
-        expect(contentListeners).toHaveLength(2);
+        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
         expect(chromeMock.tabs.sendMessage.mock.calls.filter(([, message]) => message.action === 'closeSpotlight')).toHaveLength(0);
     });
@@ -158,7 +158,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         expectOpen();
         messageClient.reportError('Still connected to the live status UI');
         expect(dialog().querySelector('[role="status"]').textContent).toContain('Still connected');
-        expect(contentListeners).toHaveLength(2);
+        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
     });
 
@@ -186,7 +186,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await pause(220);
         expect(host()).toBe(original);
         expectOpen();
-        expect(contentListeners).toHaveLength(2);
+        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
     });
 
@@ -201,7 +201,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         expect(await Promise.all(responses)).toEqual([{ success: true, open: true }, { success: true, open: true }]);
         await pause(220);
         expectOpen();
-        expect(contentListeners).toHaveLength(2);
+        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
     });
 
     it('does not acknowledge paired launch before asynchronous real dialog creation completes', async () => {
@@ -248,7 +248,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await command('toggleSpotlightNewTab');
         await pause(220);
         expectOpen();
-        expect(contentListeners).toHaveLength(2);
+        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
         await command('toggleSpotlightNewTab');
         await pause(220);
@@ -301,6 +301,48 @@ describe('paired sidebar real overlay DOM wiring', () => {
         enableSidebar(); await activate(); await vi.waitFor(() => expect(sidebarRow()).not.toBeNull());
         expect(sidebarRow().classList.contains('selected')).toBe(false);
         sidebarRow().click(); expect(sidebarCalls()).toHaveLength(0); expectOpen();
+    });
+    it('ranks a fuzzy sidebar action first and invokes trusted Enter on the original event stack', async () => {
+        const listenerSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');
+        try {
+            enableSidebar(); await activate(); await vi.waitFor(() => expect(sidebarRow()).not.toBeNull());
+            input().value = 'opn arcfi'; input().dispatchEvent(new Event('input', { bubbles: true }));
+            const rows = [...dialog().querySelectorAll('[data-result-type]')];
+            expect(rows.map(row => row.dataset.resultType)).toEqual(['arcify-sidebar-command', 'search-query']);
+            expect(rows[0].classList.contains('selected')).toBe(true);
+            expect(decodeURIComponent(rows[0].querySelector('img').getAttribute('src'))).toContain('M9 4v16');
+            listenerSpy.mock.calls.forEach(([name, listener], i) => {
+                if (name === 'keydown' && listenerSpy.mock.contexts[i] === input()) listener({ type: 'keydown', key: 'Enter', isTrusted: true, preventDefault() {}, stopPropagation() {} });
+            });
+            expect(sidebarCalls()).toHaveLength(1);
+            expectOpen();
+        } finally { listenerSpy.mockRestore(); }
+    });
+    it('keeps a manually selected web search through asynchronous action refreshes', async () => {
+        enableSidebar(); await activate(); await vi.waitFor(() => expect(sidebarRow()).not.toBeNull());
+        input().value = 'open arcify'; input().dispatchEvent(new Event('input', { bubbles: true }));
+        input().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        expect(dialog().querySelector('.selected').dataset.resultType).toBe('search-query');
+        await pause(200);
+        expect(dialog().querySelector('.selected').dataset.resultType).toBe('search-query');
+        expect(input().value).toBe('open arcify');
+        expect(sidebarCalls()).toHaveLength(0);
+    });
+    it('promotes matched workspace activation while preserving standalone and URL search', async () => {
+        await activate();
+        const workspace = { type: 'arcify-space', title: 'Pair Work', metadata: { matchScore: 0.8,
+            arcifyBridge: { kind: 'space', peerId, windowId: 2, spaceId: 'work' } } };
+        const search = vi.spyOn(messageClient, 'getLocalSuggestions').mockResolvedValue([workspace]);
+        try {
+            input().value = 'pair wrok'; input().dispatchEvent(new Event('input', { bubbles: true }));
+            await vi.waitFor(() => expect(dialog().querySelector('.selected')?.dataset.resultType).toBe('arcify-space'));
+            expect(dialog().querySelector('[data-result-type="search-query"]')).not.toBeNull();
+            input().value = 'https://arcify.com'; input().dispatchEvent(new Event('input', { bubbles: true }));
+            expect(dialog().querySelector('.selected').dataset.resultType).toBe('url-suggestion');
+            expect(sidebarRow()).toBeNull();
+            input().value = 'opn arcfi'; input().dispatchEvent(new Event('input', { bubbles: true }));
+            expect(dialog().querySelector('.selected').dataset.resultType).toBe('search-query');
+        } finally { search.mockRestore(); }
     });
     it('calls the dedicated peer path synchronously from the real delegated click handler and keeps overlay visible', async () => {
         const listenerSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');

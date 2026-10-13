@@ -136,6 +136,12 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
+        if (result.type === 'arcify-sidebar-command') {
+            // SVGs loaded through <img> cannot inherit the row's currentColor.
+            // This neutral has at least 3.5:1 contrast on both the current
+            // #2d2d2d surface and white, without depending on host-page theme.
+            return `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>')}`;
+        }
         if (result.favicon && result.favicon.startsWith('http')) {
             return result.favicon;
         }

@@ -21,6 +21,7 @@ import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
 import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
+import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
 
 /**
  * DORMANT CONTENT SCRIPT ARCHITECTURE
@@ -447,13 +448,14 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let actionPending = false;
     let sidebarCommand;
     let manuallySelected = false;
-    let sidebarSelectionInvalidated = false;
+    let selectionInvalidated = false;
     let spotlightClosed = false;
     let removalTimer = null;
     let prefillTimer = null;
 
     // Initialize spotlight state
     let currentResults = [];
+    let typedQuery = ''; // Genuine input only; keyboard URL/title previews do not change the search.
     let instantSuggestion = null; // The real-time first suggestion
     let asyncSuggestions = []; // Debounced suggestions from background
     let searchQueryId = 0; // Query generation counter for stale response protection (PERF-03)
@@ -465,13 +467,13 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Handle result action via message passing using shared client (with tab ID optimization)
     async function handleResultActionViaMessage(result, mode) {
-        return await SpotlightMessageClient.handleResult(result, mode);
+        return await SpotlightMessageClient.handleResultDetailed(result, mode);
     }
 
 
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
-        sidebarSelectionInvalidated = false;
+        selectionInvalidated = false;
         manuallySelected = true;
         if (isSidebarResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
@@ -486,8 +488,21 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         }
     };
 
-    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange);
+    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange, () => {
+        manuallySelected = true;
+        selectionInvalidated = false;
+    });
     sidebarCommand = new SidebarCommandController({ showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    const liveResults = mountLiveTabResults({
+        isActive: () => !spotlightClosed,
+        onInvalidate: removedTabIds => {
+            searchQueryId++;
+            if (isTabResultRemoved(selectionManager.getSelectedResult(), removedTabIds)) selectionInvalidated = true;
+            asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
+            updateDisplay();
+        },
+        onRefresh: () => typedQuery ? handleAsyncSearch() : loadInitialResults()
+    });
 
     // Load initial results
     async function loadInitialResults() {
@@ -499,11 +514,11 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
             const results = await sendGetSuggestionsMessage('', mode);
-            if (spotlightClosed || queryId !== searchQueryId || input.value.trim()) return;
+            if (spotlightClosed || queryId !== searchQueryId || typedQuery) return;
             asyncSuggestions = results || [];
             updateDisplay();
         } catch (error) {
-            if (spotlightClosed || queryId !== searchQueryId || input.value.trim()) return;
+            if (spotlightClosed || queryId !== searchQueryId || typedQuery) return;
             Logger.error('[Spotlight] Error loading initial results:', error);
             instantSuggestion = null;
             asyncSuggestions = [];
@@ -527,7 +542,9 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function handleInstantInput() {
         if (spotlightClosed) return;
         searchQueryId++;
-        const query = input.value.trim();
+        typedQuery = input.value.trim();
+        const query = typedQuery;
+        asyncSuggestions = []; // Never promote or activate stale matches for a new query.
 
         if (!query) {
             instantSuggestion = null;
@@ -548,7 +565,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Stale queries are discarded via query generation counter
     async function handleAsyncSearch() {
         if (spotlightClosed) return;
-        const query = input.value.trim();
+        const query = typedQuery;
         const queryId = ++searchQueryId;
 
         if (!query) {
@@ -590,26 +607,23 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Combine instant and async suggestions with deduplication
     function combineResults() {
-        const results = SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions);
-        const command = sidebarCommand?.result(input.value);
-        return command ? [...results, command] : results;
+        const command = sidebarCommand?.result(typedQuery);
+        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
+            actions: command ? [command] : [], query: typedQuery
+        });
     }
 
     // Update the display with combined results
     function updateDisplay() {
         if (spotlightClosed) return;
         const previous = selectionManager.getSelectedResult();
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId) sidebarSelectionInvalidated = true;
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId) selectionInvalidated = true;
         currentResults = combineResults();
-        selectionManager.updateResults(currentResults);
+        selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
         if (!manuallySelected && !input.value.trim() && isSidebarResult(currentResults[0])) selectionManager.selectedIndex = -1;
-        if (manuallySelected && previous) {
-            const index = currentResults.findIndex(result => result === previous || JSON.stringify(result) === JSON.stringify(previous));
-            if (index >= 0) selectionManager.selectedIndex = index;
-        }
-        // A failed/revoked command must not expose a different default action to
+        // A failed/revoked command or removed tab must not expose another action to
         // held Enter or a later async refresh. Fresh input/navigation can select again.
-        if (sidebarSelectionInvalidated) selectionManager.selectedIndex = -1;
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
             displayEmptyState();
@@ -642,7 +656,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
-        sidebarSelectionInvalidated = false;
+        selectionInvalidated = false;
         manuallySelected = false;
         // Programmatic .value previews do not fire input; every input event is a query change.
         baseInputHandler(e);
@@ -662,8 +676,9 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             if (actionPending) return;
             actionPending = true;
             // Keep errors visible and avoid repeated Enter/clicks while an action is pending.
-            const success = await handleResultActionViaMessage(result, mode);
-            if (success) closeSpotlight();
+            const response = await handleResultActionViaMessage(result, mode);
+            if (response.success) closeSpotlight();
+            else liveResults.handleActionFailure(result, response);
         } catch (error) {
             Logger.error('[Spotlight] Error in result action:', error);
             bridgeStatus.showError(error.message);
@@ -685,9 +700,10 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         resultsContainer,
         (result, index, event) => {
             if (isSidebarResult(result) && event?.isTrusted !== true) return;
-            sidebarSelectionInvalidated = false;
+            selectionInvalidated = false;
             manuallySelected = true;
-            if (isSidebarResult(result)) selectionManager.selectedIndex = index;
+            selectionManager.selectedIndex = index;
+            selectionManager.updateVisualSelection();
             return handleResultAction(result, event);
         },
         () => currentResults // function that returns current results
@@ -701,6 +717,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         clearTimeout(prefillTimer);
         removeGlobalCloseListener();
         sidebarCommand.dispose();
+        liveResults.dispose();
         bridgeStatus.dispose();
         dialog.close();
 

@@ -8,6 +8,60 @@ const SIDEBAR_TYPE = 'arcify-sidebar';
 const validGesture = event => event?.isTrusted === true && !event.repeat && !event.isComposing &&
     ((event.type === 'keydown' && event.key === 'Enter') || (event.type === 'click' && event.button === 0));
 
+const SIDEBAR_TERMS = ['open', 'show', 'arcify', 'sidebar', 'side', 'panel'];
+
+// A command match must account for every word. Whole-query fuzzy searches can
+// mistake "sidebar documentation" for an instruction to open the sidebar.
+// This small bounded edit check also recognizes adjacent transpositions, unlike
+// raising the general data-search tolerance to accommodate short command typos.
+function oneEditAway(word, term) {
+    if (Math.abs(word.length - term.length) > 1) return false;
+    let index = 0;
+    while (index < Math.min(word.length, term.length) && word[index] === term[index]) index++;
+    if (index === Math.min(word.length, term.length)) return true;
+    if (word.length !== term.length) {
+        return word.length > term.length
+            ? word.slice(index + 1) === term.slice(index)
+            : word.slice(index) === term.slice(index + 1);
+    }
+    return word.slice(index + 1) === term.slice(index + 1) ||
+        (word[index] === term[index + 1] && word[index + 1] === term[index] &&
+            word.slice(index + 2) === term.slice(index + 2));
+}
+
+export function matchSidebarQuery(query = '') {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return 0;
+    if (normalized.length > 64 || !/^[a-z]+(?:\s+[a-z]+)*$/.test(normalized)) return null;
+    const words = normalized.split(/\s+/);
+    if (words.length > 6) return null;
+    let total = 0;
+    for (const word of words) {
+        if (word.length < 2) return null;
+        let best = 0;
+        for (const term of SIDEBAR_TERMS) {
+            if (word === term) best = 1;
+            else if (term.startsWith(word)) best = Math.max(best, 0.9 + 0.09 * word.length / term.length);
+            // Keep short, unrelated words from becoming commands through a
+            // missing first letter (e.g. "pen" matching "open").
+            else if (word.length >= 3 &&
+                (word[0] === term[0] || (word[0] === term[1] && word[1] === term[0]))) {
+                // Longer partial words may contain a typo too: "arcfi" is an
+                // adjacent transposition in the partial "arcif".
+                const candidates = word.length >= 4
+                    ? [term, term.slice(0, word.length), term.slice(0, word.length + 1)] : [term];
+                for (const candidate of candidates) {
+                    if (oneEditAway(word, candidate)) best = Math.max(best,
+                        (1 - 1 / Math.max(word.length, candidate.length)) * (candidate === term ? 1 : 0.95));
+                }
+            }
+        }
+        if (!best) return null;
+        total += best;
+    }
+    return total / words.length;
+}
+
 export class SidebarCommandController {
     constructor({ api = chrome, tabId, newTab = false, onChange = () => {}, showError = () => {}, showSuccess = () => {}, timeoutMs = 5000 } = {}) {
         this.api = api;
@@ -62,10 +116,10 @@ export class SidebarCommandController {
 
     result(query = '') {
         if (!this.peerId || this.disposed) return null;
-        const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-        if (!words.every(word => 'open arcify sidebar side panel'.includes(word))) return null;
+        const matchScore = matchSidebarQuery(query);
+        if (matchScore === null) return null;
         return { type: SIDEBAR_RESULT_TYPE, title: 'Open Arcify sidebar', url: '', domain: '',
-            metadata: { sidebarPeerId: this.peerId } };
+            metadata: { sidebarPeerId: this.peerId, matchScore } };
     }
 
     invoke(result, event) {

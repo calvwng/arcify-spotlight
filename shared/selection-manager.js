@@ -1,17 +1,40 @@
 // selection-manager.js - Shared selection management for spotlight components
 // Consolidates identical SelectionManager implementations from overlay.js and popup.js
 
+// Match the underlying choice, not mutable scores, labels, or enrichment fields.
+export function resultIdentity(result) {
+    if (!result) return null;
+    const metadata = result.metadata || {};
+    if (result.type === 'arcify-sidebar-command') return JSON.stringify([result.type, metadata.sidebarPeerId]);
+    const owner = metadata.arcifyBridge;
+    if (owner) return JSON.stringify(['arcify', owner.peerId, owner.windowId, owner.kind,
+        ...(owner.kind === 'tab' ? [owner.tabId] : [owner.spaceId, owner.bookmarkId])]);
+    if (['open-tab', 'pinned-tab'].includes(result.type) && metadata.tabId != null) return JSON.stringify(['tab', metadata.tabId]);
+    if (metadata.tabId != null) return JSON.stringify([result.type, 'tab', metadata.tabId]);
+    if (metadata.bookmarkId != null) return JSON.stringify([result.type, 'bookmark', metadata.bookmarkId]);
+    if (metadata.query != null) return JSON.stringify([result.type, 'query', metadata.query, Boolean(metadata.isUrl)]);
+    return JSON.stringify([result.type, result.url || '', result.url ? '' : result.title || '']);
+}
+
 export class SelectionManager {
-    constructor(container, onSelectionChange = null) {
+    constructor(container, onSelectionChange = null, onNavigation = null) {
         this.container = container;
         this.selectedIndex = 0;
         this.results = [];
         this.onSelectionChange = onSelectionChange;
+        this.onNavigation = onNavigation;
     }
 
-    updateResults(newResults) {
+    updateResults(newResults, { preserveSelection = false } = {}) {
+        const previousIdentity = resultIdentity(this.getSelectedResult());
         this.results = newResults;
         this.selectedIndex = 0;
+        if (preserveSelection) {
+            // If a chosen result disappears, leave nothing selected rather than
+            // silently changing the meaning of Enter during an async refresh.
+            this.selectedIndex = previousIdentity === null ? -1
+                : newResults.findIndex(result => resultIdentity(result) === previousIdentity);
+        }
         this.updateVisualSelection();
         // Note: Callback is NOT triggered on initial load - only on explicit navigation
         // This prevents URL preview from overriding empty input on spotlight open
@@ -92,6 +115,12 @@ export class SelectionManager {
     handleKeyDown(event, skipContainerCheck = false) {
         if (!skipContainerCheck && !this.container.contains(this.getActiveElement())) {
             return false; // Not handling this event
+        }
+
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            // Navigation expresses intent even when the current row is already
+            // at a boundary and the selection-change callback will not run.
+            this.onNavigation?.();
         }
 
         switch (event.key) {

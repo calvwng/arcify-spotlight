@@ -101,7 +101,7 @@ export class SpotlightMessageClient {
             if (!response || response.success === false) {
                 Logger.error('[SpotlightMessageClient] Result action failed:', response?.error || 'No response');
                 this.reportError(response?.error || 'The action was not confirmed. Check your tabs before trying again.');
-                return { success: false };
+                return { success: false, error: response?.error, errorCode: response?.errorCode };
             }
             return { ...response, success: true };
         } catch (error) {
