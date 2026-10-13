@@ -280,3 +280,41 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         expect(host()).toBeNull();
     });
 });
+
+describe('paired sidebar real overlay DOM wiring', () => {
+    function enableSidebar() {
+        const original = chromeMock.runtime.sendMessage.getMockImplementation();
+        chromeMock.runtime.sendMessage.mockImplementation((target, request, callback) => {
+            if (target === peerId && request.type === 'arcify-sidebar') {
+                callback({ ...request, role: 'arcify', ok: true });
+                return;
+            }
+            if (target === peerId && request.command === 'hello') {
+                return original(target, request, response => callback({ ...response, capabilities: ['openSidebar'] }));
+            }
+            return original(target, request, callback);
+        });
+    }
+    const sidebarCalls = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === peerId && request?.type === 'arcify-sidebar');
+    const sidebarRow = () => dialog()?.querySelector('[data-result-type="arcify-sidebar-command"]');
+    it('shows an ordinary unselected empty-query command and rejects synthetic click', async () => {
+        enableSidebar(); await activate(); await vi.waitFor(() => expect(sidebarRow()).not.toBeNull());
+        expect(sidebarRow().classList.contains('selected')).toBe(false);
+        sidebarRow().click(); expect(sidebarCalls()).toHaveLength(0); expectOpen();
+    });
+    it('calls the dedicated peer path synchronously from the real delegated click handler and keeps overlay visible', async () => {
+        const listenerSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');
+        try {
+            enableSidebar(); await activate(); await vi.waitFor(() => expect(sidebarRow()).not.toBeNull());
+            const row = sidebarRow(), results = row.parentElement;
+            listenerSpy.mock.calls.forEach(([name, listener], i) => {
+                if (name === 'click' && listenerSpy.mock.contexts[i] === results) listener({ type: 'click', button: 0, target: row, isTrusted: true });
+            });
+            expect(sidebarCalls()).toHaveLength(1);
+            expect(sidebarCalls()[0][1]).toEqual({ type: 'arcify-sidebar', version: 1, requestId: expect.any(String) });
+            expect(chromeMock.runtime.sendMessage.mock.calls.some(([message]) => message?.action === 'spotlightHandleResult')).toBe(false);
+            expect(dialog().querySelector('[role="status"]').textContent).toBe('Arcify sidebar opened.');
+            expectOpen();
+        } finally { listenerSpy.mockRestore(); }
+    });
+});

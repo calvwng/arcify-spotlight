@@ -39,6 +39,20 @@ beforeEach(async () => {
 });
 
 describe('Spotlight background bridge seams', () => {
+    it('advertises additive startup capability without changing the v1 handshake', async () => {
+        const response = await callExternal({ type: 'arcify-bridge', version: 1, requestId: 'hello-new', command: 'hello', windowId: 2 });
+        expect(response).toMatchObject({ type: 'arcify-bridge', version: 1, role: 'spotlight', ok: true, capabilities: ['startupSuggestion'] });
+    });
+    it('authenticates and validates a startup offer before relaying only to extension pages', async () => {
+        chromeMock.tabs.get.mockResolvedValue({ id: 42, windowId: 2, active: true, url: chromeMock.runtime.getURL('newtab.html') });
+        chromeMock.windows.get.mockResolvedValue({ id: 2, focused: true });
+        chromeMock.runtime.sendMessage.mockImplementation(async message => ({ accepted: false, reason: 'user-interaction', requestId: message.requestId, tabId: message.tabId, windowId: message.windowId }));
+        const message = { type: 'arcify-bridge', version: 1, requestId: 'startup-new', command: 'startupSuggestion', tabId: 42, windowId: 2 };
+        expect(await callExternal(message)).toMatchObject({ ok: true, accepted: false, reason: 'user-interaction' });
+        expect(chromeMock.tabs.sendMessage).not.toHaveBeenCalled();
+        expect(await callExternal({ ...message, unexpected: true })).toMatchObject({ ok: false, error: { code: 'INVALID_REQUEST' } });
+        expect(await callExternal(message, { id: peerId, url: 'https://untrusted.test/' })).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+    });
     it('searches a fresh snapshot in the caller window, including closed pins', async () => {
         const response = await callInternal({ action: 'getLocalSuggestions', query: 'example', mode: 'new-tab' });
         expect(response.success).toBe(true);

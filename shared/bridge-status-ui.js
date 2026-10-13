@@ -39,5 +39,5 @@ export function mountBridgeStatus(parent) {
     }).catch(() => {
         if (!disposed && revision === startRevision) showError('Could not check the Arcify connection.');
     });
-    return { showError, dispose() { disposed = true; unsubscribe(); row.remove(); } };
+    return { showError, showSuccess(message) { revision++; if (!disposed) { label.textContent = message; row.dataset.state = 'connected'; } }, dispose() { disposed = true; unsubscribe(); row.remove(); } };
 }

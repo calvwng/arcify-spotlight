@@ -146,7 +146,8 @@ export class ArcifyBridgeClient {
             const response = await this.request('hello', windowId, {}, peerId);
             const warnings = response.snapshot.warnings || [];
             const warningText = warnings.length ? ` Some pinned bookmarks are unavailable. ${warnings.map(warning => warning.message).join(' ')}` : '';
-            return { configured: true, peerId, status: 'connected', warnings, message: 'Connected to Arcify. Workspace changes are managed by Arcify.' + warningText };
+            const capabilities = Array.isArray(response.capabilities) ? response.capabilities.filter(value => value === 'openSidebar') : [];
+            return { configured: true, peerId, status: 'connected', capabilities, warnings, message: 'Connected to Arcify. Workspace changes are managed by Arcify.' + warningText };
         } catch (error) {
             // Another options tab can change pairing while the check is in flight.
             // Report the currently saved ID without retrying the old or new peer.

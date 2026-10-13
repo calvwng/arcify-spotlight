@@ -68,6 +68,7 @@ export class SharedSpotlightLogic {
             return `
                 <button class="arcify-spotlight-result-item ${isSelected ? 'selected' : ''}"
                         data-index="${index}"
+                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"
                         data-testid="spotlight-result">
                     <img class="arcify-spotlight-result-favicon"
                          src="${SpotlightUtils.getFaviconUrl(result)}"
@@ -155,7 +156,7 @@ export class SharedSpotlightLogic {
                     const index = parseInt(item.dataset.index);
                     const result = currentResults[index];
                     if (result && onResultClick) {
-                        onResultClick(result, index);
+                        onResultClick(result, index, e);
                     }
                 }
             }

@@ -20,6 +20,7 @@ import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
 import { mountBridgeStatus } from './shared/bridge-status-ui.js';
+import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
 
 /**
  * DORMANT CONTENT SCRIPT ARCHITECTURE
@@ -444,6 +445,9 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     const resultsContainer = dialog.querySelector('.arcify-spotlight-results');
     const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
     let actionPending = false;
+    let sidebarCommand;
+    let manuallySelected = false;
+    let sidebarSelectionInvalidated = false;
     let spotlightClosed = false;
     let removalTimer = null;
     let prefillTimer = null;
@@ -465,12 +469,11 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     }
 
 
-    // Flag to track selection-driven input changes (should not trigger search)
-    let isSelectionDrivenChange = false;
-
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
-        isSelectionDrivenChange = true;
+        sidebarSelectionInvalidated = false;
+        manuallySelected = true;
+        if (isSidebarResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -481,25 +484,26 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         } else {
             input.value = '';
         }
-        // Flag will be checked and reset by the input handler
     };
 
     const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange);
+    sidebarCommand = new SidebarCommandController({ showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
 
     // Load initial results
     async function loadInitialResults() {
         if (spotlightClosed) return;
+        const queryId = ++searchQueryId;
         try {
             // Clear instant suggestion when loading initial results
             instantSuggestion = null;
 
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
             const results = await sendGetSuggestionsMessage('', mode);
-            if (spotlightClosed) return;
+            if (spotlightClosed || queryId !== searchQueryId || input.value.trim()) return;
             asyncSuggestions = results || [];
             updateDisplay();
         } catch (error) {
-            if (spotlightClosed) return;
+            if (spotlightClosed || queryId !== searchQueryId || input.value.trim()) return;
             Logger.error('[Spotlight] Error loading initial results:', error);
             instantSuggestion = null;
             asyncSuggestions = [];
@@ -522,10 +526,13 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Handle instant suggestion update (no debouncing)
     function handleInstantInput() {
         if (spotlightClosed) return;
+        searchQueryId++;
         const query = input.value.trim();
 
         if (!query) {
             instantSuggestion = null;
+            asyncSuggestions = [];
+            updateDisplay();
             loadInitialResults();
             return;
         }
@@ -583,14 +590,26 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Combine instant and async suggestions with deduplication
     function combineResults() {
-        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions);
+        const results = SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions);
+        const command = sidebarCommand?.result(input.value);
+        return command ? [...results, command] : results;
     }
 
     // Update the display with combined results
     function updateDisplay() {
         if (spotlightClosed) return;
+        const previous = selectionManager.getSelectedResult();
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId) sidebarSelectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults);
+        if (!manuallySelected && !input.value.trim() && isSidebarResult(currentResults[0])) selectionManager.selectedIndex = -1;
+        if (manuallySelected && previous) {
+            const index = currentResults.findIndex(result => result === previous || JSON.stringify(result) === JSON.stringify(previous));
+            if (index >= 0) selectionManager.selectedIndex = index;
+        }
+        // A failed/revoked command must not expose a different default action to
+        // held Enter or a later async refresh. Fresh input/navigation can select again.
+        if (sidebarSelectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
             displayEmptyState();
@@ -599,6 +618,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
         const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
         SharedSpotlightLogic.updateResultsDisplay(resultsContainer, [], currentResults, mode, activeGroupName);
+        selectionManager.updateVisualSelection();
     }
 
 
@@ -620,19 +640,17 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         150                    // debounce delay in ms
     );
 
-    // Input event handler - skip search for selection-driven changes
+    // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
-        if (isSelectionDrivenChange) {
-            // Reset flag and skip search - this was a selection preview update
-            isSelectionDrivenChange = false;
-            return;
-        }
-        // User typed something - trigger search
+        sidebarSelectionInvalidated = false;
+        manuallySelected = false;
+        // Programmatic .value previews do not fire input; every input event is a query change.
         baseInputHandler(e);
     });
 
     // Handle result selection
-    async function handleResultAction(result) {
+    async function handleResultAction(result, event) {
+        if (sidebarCommand.invoke(result, event)) return;
         if (!result) {
             Logger.error('[Spotlight] No result provided');
             return;
@@ -657,7 +675,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Keyboard navigation
     input.addEventListener('keydown', SharedSpotlightLogic.createKeyDownHandler(
         selectionManager,                      // SelectionManager for navigation
-        (selected) => handleResultAction(selected),  // Enter handler
+        (selected, event) => handleResultAction(selected, event),  // Enter handler
         () => closeSpotlight(),               // Escape handler
         // true                                 // container focus check enabled for overlay mode
     ));
@@ -665,7 +683,13 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Handle clicks on results
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
-        (result, index) => handleResultAction(result), // adapter: only pass result to existing handler
+        (result, index, event) => {
+            if (isSidebarResult(result) && event?.isTrusted !== true) return;
+            sidebarSelectionInvalidated = false;
+            manuallySelected = true;
+            if (isSidebarResult(result)) selectionManager.selectedIndex = index;
+            return handleResultAction(result, event);
+        },
         () => currentResults // function that returns current results
     );
 
@@ -676,6 +700,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         searchQueryId++;
         clearTimeout(prefillTimer);
         removeGlobalCloseListener();
+        sidebarCommand.dispose();
         bridgeStatus.dispose();
         dialog.close();
 

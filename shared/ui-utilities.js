@@ -167,6 +167,9 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'arcify-sidebar-command') {
+            return { title: 'Open Arcify sidebar', subtitle: 'Arcify sidebar • This tab stays open', action: 'Open Sidebar' };
+        }
         const owner = result.metadata?.arcifyBridge;
         if (owner) {
             const action = owner.kind === 'space' ? 'Switch Workspace'

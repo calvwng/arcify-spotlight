@@ -16,6 +16,7 @@ import { arcifyBridge } from './shared/arcify-bridge.js';
 import { BRIDGE_TYPE, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
 import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
+import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -159,13 +160,17 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
         try {
             const peerId = await arcifyBridge.getPeerId();
             if (!trustedSender(sender, peerId)) throw Object.assign(new Error('Pair this Arcify extension in Spotlight settings first.'), { code: 'UNAUTHORIZED' });
-            validateRequest(message, ['hello', 'launch']);
+            validateRequest(message, ['hello', 'launch', 'startupSuggestion']);
             await chrome.windows.get(message.windowId);
             if (message.command === 'launch') {
                 const opened = await pairedLaunch(message, peerId);
                 if (!opened) throw Object.assign(new Error('Spotlight is disabled or could not open.'), { code: 'LAUNCH_FAILED' });
             }
-            sendResponse(responseFor(message, 'spotlight', { ok: true, extensionId: chrome.runtime.id }));
+            const startupResult = message.command === 'startupSuggestion'
+                ? await offerStartupSidebarSuggestion(chrome, arcifyBridge, message, peerId) : undefined;
+            sendResponse(responseFor(message, 'spotlight', { ok: true, extensionId: chrome.runtime.id,
+                ...(message.command === 'hello' ? { capabilities: ['startupSuggestion'] } : {}),
+                ...(startupResult || {}) }));
         } catch (error) {
             sendResponse(responseFor(message, 'spotlight', { ok: false, error: { code: error.code || 'FAILED', message: error.message } }));
         }

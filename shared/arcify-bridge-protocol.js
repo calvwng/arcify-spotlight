@@ -21,7 +21,7 @@ export function isSafeUrl(value) {
 const commandFields = {
     hello: [], snapshot: [], activateSpace: ['spaceId'], activateTab: ['tabId'],
     openTab: ['url', 'spaceId'], navigateTab: ['tabId', 'url'],
-    openBookmark: ['spaceId', 'bookmarkId'], launch: ['mode']
+    openBookmark: ['spaceId', 'bookmarkId'], launch: ['mode'], startupSuggestion: ['tabId']
 };
 export function validateRequest(message, commands) {
     if (!message || typeof message !== 'object' || Array.isArray(message) || message.type !== BRIDGE_TYPE)
@@ -34,7 +34,7 @@ export function validateRequest(message, commands) {
     if (Object.keys(message).some(key => !fields.includes(key))) throw bridgeError('INVALID_REQUEST', 'Unexpected request field.');
     if (['activateSpace', 'openBookmark'].includes(message.command) && !isId(message.spaceId)
         || message.command === 'openTab' && message.spaceId !== undefined && !isId(message.spaceId)
-        || ['activateTab', 'navigateTab'].includes(message.command) && !isTabId(message.tabId)
+        || ['activateTab', 'navigateTab', 'startupSuggestion'].includes(message.command) && !isTabId(message.tabId)
         || ['openTab', 'navigateTab'].includes(message.command) && !isSafeUrl(message.url)
         || message.command === 'openBookmark' && !isId(message.bookmarkId)
         || message.command === 'launch' && !['current-tab', 'new-tab'].includes(message.mode))

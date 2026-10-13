@@ -173,7 +173,7 @@ endpoint. Every request contains:
 
 Both manifests have `externally_connectable.ids: ["*"]` so development and installed
 extension IDs can reach the listener. This is **reachability, not authorization**.
-There are no allowed website-origin matches. Handlers require `sender.id` to equal
+There are no allowed website-origin matches. Normal v1 bridge handlers require `sender.id` to equal
 the saved peer ID; when sender URL/origin is present, it must match that extension's
 origin. Websites, unpaired extensions, and malformed requests do not gain access.
 Spotlight accepts configuration changes only from its own options page.
@@ -182,6 +182,57 @@ Pair only builds you trust: paired Spotlight can read Arcify workspace/tab/bookm
 metadata and request workspace actions. Paired Arcify can request Spotlight launch
 in a window. This does not create credentials, an account, or synced peer settings.
 The bridge is not a replacement for the browser's extension permission model.
+
+## Open Arcify sidebar and startup suggestion
+
+Matching builds advertise optional capabilities: Arcify's `hello` includes
+`openSidebar`; Spotlight's includes `startupSuggestion`. Older paired builds keep
+ordinary bridge behavior, but Spotlight does not show this command without a
+successful, explicitly paired capability check. No manifest permissions were added.
+
+“Open Arcify sidebar” is an ordinary result in the new-tab page and HTTP(S) overlay.
+It appears after ordinary empty-query results and is never the sole default
+empty-query selection unless the startup offer below was accepted. Search for
+“Arcify sidebar,” select it with the arrow keys, or click it. Its native Enter/click
+handler directly sends `{type: 'arcify-sidebar', version: 1, requestId}` to the cached
+paired Arcify ID on the original gesture stack, without an awaited lookup, Spotlight
+background relay, generic navigation action, or mutation queue. Synthetic events
+are rejected. Arcify independently checks its freshly saved peer and browser-supplied
+source tab before calling its own `sidePanel.open({tabId})`; the request cannot supply
+a target. The dedicated route accepts the exact paired Spotlight new-tab document
+or its authenticated top-frame HTTP(S) content script. This narrow exception does
+not broaden normal bridge authentication or create a website messaging gateway.
+
+Arcify's existing **opt-in** startup launcher setting remains the sole startup
+controller. For an unchanged active Spotlight new tab, Arcify can offer the
+`startupSuggestion` v1 command instead of creating its legacy helper. Spotlight
+revalidates the source and relays only to that new-tab renderer through internal
+runtime messaging. Only an already ready, visible, empty, untouched page accepts,
+selecting the sidebar result once without clearing text, creating a tab, or changing
+focus. Typing, navigation/selection, pointer interaction, focus loss, hiding, or
+page disposal suppresses later automatic selection. Whitespace/clearing input and
+Escape also remove an existing startup selection immediately. A declined offer is
+never applied later when initialization completes.
+
+Replies include `accepted: true`, or `accepted: false` with `user-interaction`,
+`not-ready`, or `not-eligible`. Intentional interaction and uncertain delivery are
+consumed without a foreground fallback. The companion retains its legacy launcher
+for unsupported/unpaired startup paths; explicit other declines can at most create
+an inactive helper. Neither extension newly enables the startup setting, and
+Spotlight does not register a separate browser-startup/tab-creation flow.
+
+Success keeps the new-tab page open. Failure, timeout, unsupported/revoked pairing,
+or an invalid response keeps the UI available with a visible error and Arcify
+toolbar-button fallback; no automatic retry occurs. Removing a selected command
+leaves no ordinary fallback selected until fresh input or explicit navigation, so a
+held Enter cannot accidentally navigate somewhere else. Pairing changes immediately
+invalidate cached readiness, and stale preparation/action replies cannot revive it.
+
+Chrome may initially focus its native omnibox on a new tab. The startup offer does
+not steal that focus: bare Enter at browser startup is therefore not guaranteed to
+invoke Spotlight. Focus Spotlight's input or click its command. Real paired-browser
+acceptance of native gestures, cold-worker delivery, and native side-panel visibility
+remains pending; mocked module/DOM tests do not establish that browser behavior.
 
 ## Lifecycle, disconnect, and failures
 
