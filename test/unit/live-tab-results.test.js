@@ -183,6 +183,74 @@ describe('background tab-change fan-out', () => {
 const PEER = 'a'.repeat(32);
 const pairedMessage = (extra = {}) => ({ action: ARCIFY_RESULTS_CHANGED, windowId: 2, peerId: PEER, ...extra });
 describe('paired logical-state result invalidation', () => {
+    it('keeps a native removal when paired and native signals share a superseded context read', async () => {
+        source.peerId = PEER;
+        let resolveInitial, resolveFresh;
+        api.runtime.sendMessage
+            .mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFresh = resolve; }));
+        mounted = mountLiveTabResults({ api, onInvalidate, onRefresh });
+        await Promise.resolve();
+        // Both wait for the same first read. Paired freshContext resumes first,
+        // clearing the shared context before native apply resumes from its await.
+        notify(pairedMessage()); notify(message(2, [11]));
+        resolveInitial({ ...source });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(resolveFresh).toBeTypeOf('function');
+        expect(onInvalidate).not.toHaveBeenCalled();
+        resolveFresh({ ...source });
+        await vi.advanceTimersByTimeAsync(50);
+        expect(onInvalidate).toHaveBeenCalledWith([11]);
+        expect(onRefresh).toHaveBeenCalledExactlyOnceWith({ windowId: 2, peerId: PEER });
+    });
+    it('uses the superseding window context rather than an old truthy read for native scope', async () => {
+        source.peerId = PEER;
+        let resolveInitial, resolveFresh;
+        api.runtime.sendMessage
+            .mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFresh = resolve; }));
+        mounted = mountLiveTabResults({ api, onInvalidate, onRefresh });
+        await Promise.resolve();
+        notify(pairedMessage()); notify(message(2, [11]));
+        resolveInitial({ ...source });
+        await vi.advanceTimersByTimeAsync(0);
+        source.windowId = 3; resolveFresh({ ...source });
+        await vi.advanceTimersByTimeAsync(60);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+        notify(message(3, [14])); await vi.advanceTimersByTimeAsync(60);
+        expect(onInvalidate).toHaveBeenLastCalledWith([14]); expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+    it('keeps native standalone invalidation after revocation while discarding the paired signal', async () => {
+        source.peerId = PEER;
+        let resolveInitial, resolveFresh;
+        api.runtime.sendMessage
+            .mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFresh = resolve; }));
+        mounted = mountLiveTabResults({ api, onInvalidate, onRefresh });
+        await Promise.resolve();
+        notify(pairedMessage()); notify(message(2, [11]));
+        resolveInitial({ ...source });
+        await vi.advanceTimersByTimeAsync(0);
+        delete source.peerId; source.allWindows = true; resolveFresh({ ...source });
+        await vi.advanceTimersByTimeAsync(60);
+        expect(onInvalidate).toHaveBeenCalledWith([11]);
+        expect(onRefresh).toHaveBeenCalledExactlyOnceWith(undefined);
+    });
+    it('drops overlapping context continuations only when the actual surface was disposed', async () => {
+        source.peerId = PEER;
+        let resolveInitial, resolveFresh;
+        api.runtime.sendMessage
+            .mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }))
+            .mockImplementationOnce(() => new Promise(resolve => { resolveFresh = resolve; }));
+        mounted = mountLiveTabResults({ api, onInvalidate, onRefresh });
+        await Promise.resolve();
+        notify(pairedMessage()); notify(message(2, [11]));
+        resolveInitial({ ...source });
+        await vi.advanceTimersByTimeAsync(0);
+        mounted.dispose(); resolveFresh({ ...source });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(onInvalidate).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
+    });
     it('invalidates in-flight generations promptly, preserving read-only refresh coalescing', async () => {
         source.peerId = PEER; await mount();
         notify(pairedMessage()); notify(pairedMessage());

@@ -95,6 +95,27 @@ afterEach(async () => {
 });
 
 describe('paired live-tab result DOM regression', () => {
+    it('evicts the exact closed row when paired/native updates overlap an unfinished source read', async () => {
+        let resolveInitial, resolveFresh;
+        contextDelay = new Promise(resolve => { resolveInitial = resolve; });
+        await open(); expect(shownIds()).toEqual([11]);
+        const originalInput = page.input, originalContainer = page.resultsContainer;
+        contextDelay = new Promise(resolve => { resolveFresh = resolve; });
+        closeTab(11, false);
+        await dispatch(pageListeners, { action: 'spotlightArcifyResultsChanged', windowId: 2, peerId: PEER }, { id: OWN });
+        await dispatch(pageListeners, { action: 'spotlightLiveTabsChanged', windowId: 2, removedTabIds: [11] }, { id: OWN });
+        resolveInitial({ success: true, windowId: 2, sourceTabId: 12, peerId: PEER });
+        await pause(0);
+        // Still waiting for the newer authenticated read, without an exception or
+        // incorrectly consuming the native removal against the old shared context.
+        expect(shownIds()).toEqual([11]);
+        contextDelay = null;
+        resolveFresh({ success: true, windowId: 2, sourceTabId: 12, peerId: PEER });
+        await vi.waitFor(() => expect(shownIds()).toEqual([]));
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        expect(page.input).toBe(originalInput); expect(page.resultsContainer).toBe(originalContainer);
+        expect(window.close).not.toHaveBeenCalled(); expect(bridgeMutations()).toHaveLength(0);
+    });
     it('omits only the exact calling helper and removes a closed twin while keeping the page open', async () => {
         await open(); expect(shownIds()).toEqual([11]);
         expect(rows()[0].textContent).toContain('New Tab'); expect(rows()[0].textContent).toContain('Home');

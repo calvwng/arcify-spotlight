@@ -194,3 +194,54 @@ describe('Shared Arcify bridge status surface', () => {
         expect(label.textContent).toBe(expected);
     });
 });
+
+describe('action errors retain their recovery guidance', () => {
+let status;
+afterEach(() => { status?.dispose(); document.body.replaceChildren(); vi.unstubAllGlobals(); });
+function mount(response = Promise.resolve({success:true,status:{status:'connected',message:'Connected'}})) {
+    vi.stubGlobal('chrome',{runtime:{sendMessage:vi.fn(() => response)}});
+    status = mountBridgeStatus(document.body);
+    return document.querySelector('.arcify-bridge-status');
+}
+    it('keeps a revoked sidebar action error when a later passive result refresh fails', async () => {
+        const row = mount(); await Promise.resolve();
+        status.showError('This extension is not paired. Use the Arcify toolbar button.');
+        SpotlightMessageClient.reportError('This extension is not paired with Arcify.');
+        expect(row.dataset.state).toBe('error');
+        expect(row.textContent).toContain('toolbar button');
+    });
+    it('lets a later explicit action error replace the earlier failure', () => {
+        const row = mount(); status.showError('First action'); status.showError('Second action');
+        expect(row.textContent).toContain('Second action');
+    });
+    it('allows passive errors normally and after a confirmed action success', () => {
+        const row = mount(); SpotlightMessageClient.reportError('Fresh snapshot failed');
+        expect(row.textContent).toContain('Fresh snapshot failed');
+        status.showError('Action failed'); status.showSuccess('Arcify sidebar opened.');
+        expect(row.dataset.state).toBe('connected');
+        SpotlightMessageClient.reportError('Later snapshot failed');
+        expect(row.textContent).toContain('Later snapshot failed');
+    });
+    it('does not let delayed initial status overwrite a user action failure', async () => {
+        let finish; const row = mount(new Promise(resolve => { finish=resolve; }));
+        status.showError('Use the toolbar'); finish({success:true,status:{status:'connected',message:'Connected'}});
+        await Promise.resolve(); expect(row.textContent).toContain('Use the toolbar');
+    });
+    it('removes its passive listener when disposed', () => {
+        const row=mount(); status.dispose(); SpotlightMessageClient.reportError('late error');
+        expect(row.isConnected).toBe(false); expect(row.textContent).not.toContain('late error');
+    });
+    it.each(['rejected','missing','failed-response'])('shows a later ordinary result failure after sidebar recovery (%s)', async outcome => {
+        const row=mount(); await flushMessages(); status.showError('Use the old sidebar toolbar fallback.');
+        const send=chrome.runtime.sendMessage;
+        if(outcome === 'rejected') send.mockRejectedValueOnce(new Error('Transport failed'));
+        else send.mockResolvedValueOnce(outcome === 'missing' ? undefined : {success:false,error:'The selected tab was closed.'});
+        const response=await SpotlightMessageClient.handleResultDetailed({type:'open-tab'},'current-tab');
+        expect(response.success).toBe(false);
+        expect(row.textContent).not.toContain('old sidebar');
+        expect(row.textContent).toContain(outcome === 'failed-response' ? 'selected tab was closed' : 'Check your tabs before trying again');
+        SpotlightMessageClient.reportError('A later passive refresh failed.');
+        expect(row.textContent).not.toContain('passive refresh');
+    });
+
+});

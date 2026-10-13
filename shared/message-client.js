@@ -11,8 +11,8 @@ export class SpotlightMessageClient {
         return () => this.errorListeners.delete(callback);
     }
 
-    static reportError(message) {
-        for (const listener of this.errorListeners) listener(message || 'The request could not be completed.');
+    static reportError(message, source = 'refresh') {
+        for (const listener of this.errorListeners) listener(message || 'The request could not be completed.', source);
     }
 
     // Get suggestions from background script
@@ -102,13 +102,13 @@ export class SpotlightMessageClient {
 
             if (!response || response.success === false) {
                 Logger.error('[SpotlightMessageClient] Result action failed:', response?.error || 'No response');
-                this.reportError(response?.error || 'The action was not confirmed. Check your tabs before trying again.');
+                this.reportError(response?.error || 'The action was not confirmed. Check your tabs before trying again.', 'action');
                 return { success: false, error: response?.error, errorCode: response?.errorCode };
             }
             return { ...response, success: true };
         } catch (error) {
             Logger.error('[SpotlightMessageClient] Error handling result action:', error);
-            this.reportError('The action was not confirmed. Check your tabs before trying again.');
+            this.reportError('The action was not confirmed. Check your tabs before trying again.', 'action');
             return { success: false };
         }
     }

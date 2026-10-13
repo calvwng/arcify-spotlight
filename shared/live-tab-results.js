@@ -210,14 +210,18 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
             !(message.windowId === null || positiveId(message.windowId)) || !Array.isArray(message.removedTabIds) ||
             !message.removedTabIds.every(positiveId)) return false;
         const apply = async () => {
-            if (!context && !await readContext()) return;
-            if (disposed) return;
-            if (message.removedTabIds.includes(context.tabId)) {
+            let source = context || await readContext();
+            // A paired signal can clear/replace context while this native signal
+            // awaits the same read. Follow that newer read rather than dereference
+            // null, discard the removal, or scope it using the superseded result.
+            while (source && !disposed && source !== context) source = context || await readContext();
+            if (!source || disposed) return;
+            if (message.removedTabIds.includes(source.tabId)) {
                 // A page can itself move windows without reloading. Resolve its sender again.
                 context = null;
                 if (!await readContext() || disposed) return;
                 invalidate(message.removedTabIds);
-            } else if (context.allWindows || message.windowId === null || message.windowId === context.windowId) invalidate(message.removedTabIds);
+            } else if (source.allWindows || message.windowId === null || message.windowId === source.windowId) invalidate(message.removedTabIds);
         };
         void apply();
         return false;
