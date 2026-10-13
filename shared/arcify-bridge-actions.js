@@ -1,6 +1,7 @@
 /** Route navigation through Arcify only while explicitly configured. */
 import { ArcifyBridgeError } from './arcify-bridge.js';
 import { ResultType, SpotlightTabMode } from './search-types.js';
+import { isSafeUrl } from './arcify-bridge-protocol.js';
 
 export async function handleBridgeResult(bridge, api, result, mode, context) {
     const peerId = await bridge.getPeerId();
@@ -59,6 +60,9 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
             return { handled: true, command: 'search', tabId: searchTabId };
         } else {
             if (typeof result.url !== 'string' || !result.url) throw new ArcifyBridgeError('INVALID_URL', 'The selected result has no URL.');
+            // A result can outlive its provider/filter. Keep the same navigation
+            // allowlist as Arcify and fail before dispatch, without native fallback.
+            if (!isSafeUrl(result.url)) throw new ArcifyBridgeError('UNSUPPORTED_URL', 'This address cannot be opened through the Arcify connection. Choose another result.');
             command = mode === SpotlightTabMode.NEW_TAB ? 'openTab' : 'navigateTab';
             payload = command === 'openTab' ? { url: result.url } : { tabId, url: result.url };
         }

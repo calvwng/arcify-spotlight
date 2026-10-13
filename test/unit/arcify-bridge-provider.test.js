@@ -211,25 +211,65 @@ describe('Arcify bridge snapshot provider', () => {
         expect(api.storage.local.set).not.toHaveBeenCalled();
     });
 
-    it('hides only generic exact paired startup helper suggestions without changing saved identities', () => {
+    it('omits generic URL destinations unsupported by paired navigation without changing saved data', () => {
         const helper = `chrome-extension://${PEER_ID}/startup-launcher.html`;
-        const hidden = [ResultType.HISTORY, ResultType.BOOKMARK, ResultType.TOP_SITE].map((type, index) => new SearchResult({
-            type, title: 'Open Arcify sidebar', url: helper + ['?source=startup', '#start', ''][index], metadata: { bookmarkId: 'ordinary-helper' }
+        const hidden = [
+            [ResultType.HISTORY, helper + '?source=startup'],
+            [ResultType.BOOKMARK, helper + '#start'],
+            [ResultType.TOP_SITE, helper + '/'],
+            [ResultType.HISTORY, `chrome-extension://${'c'.repeat(32)}/startup-launcher.html`],
+            [ResultType.BOOKMARK, `chrome-extension://${PEER_ID}/options.html`],
+            [ResultType.URL_SUGGESTION, 'javascript:alert(1)'],
+            [ResultType.AUTOCOMPLETE_SUGGESTION, 'data:text/html,hello']
+        ].map(([type, url], index) => new SearchResult({
+            type, title: 'Open Arcify sidebar', url, metadata: { bookmarkId: `ordinary-${index}`, isUrl: true }
         }));
-        const retained = [
-            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: 'https://example.test/launcher', metadata: { bookmarkId: 'web' } }),
-            new SearchResult({ type: ResultType.HISTORY, title: 'Open Arcify sidebar', url: `chrome-extension://${'c'.repeat(32)}/startup-launcher.html` }),
-            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: `chrome-extension://${PEER_ID}/options.html`, metadata: { bookmarkId: 'options' } }),
-            new SearchResult({ type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url: helper + '/other', metadata: { bookmarkId: 'other-path' } }),
-            new SearchResult({ type: ResultType.BOOKMARK, title: 'Saved authoritative identity', url: helper,
-                metadata: { bookmarkId: 'saved', arcifyBridge: { kind: 'bookmark', peerId: PEER_ID, windowId: 11, spaceId: 'work', bookmarkId: 'saved' } } })
-        ];
-        const before = structuredClone([...hidden, ...retained]);
-        expect(provider.deduplicateResults([...hidden, ...retained])).toEqual([retained[4], ...retained.slice(0, 4)]);
-        expect([...hidden, ...retained]).toEqual(before);
+        const supported = ['https://example.test/launcher', 'http://example.test/other',
+            'file:///tmp/notes.txt', 'chrome://settings/', 'about:blank'].map((url, index) => new SearchResult({
+            type: ResultType.BOOKMARK, title: 'Open Arcify sidebar', url, metadata: { bookmarkId: `supported-${index}` }
+        }));
+        const authoritative = new SearchResult({ type: ResultType.BOOKMARK, title: 'Saved authoritative identity', url: helper,
+            metadata: { bookmarkId: 'saved', arcifyBridge: { kind: 'bookmark', peerId: PEER_ID, windowId: 11, spaceId: 'work', bookmarkId: 'saved' } } });
+        const input = [...hidden, ...supported, authoritative];
+        const before = structuredClone(input);
+        expect(provider.deduplicateResults(input)).toEqual([authoritative, ...supported]);
+        expect(input).toEqual(before);
         expect(api.storage.local.set).not.toHaveBeenCalled();
         const unpaired = new ArcifyBridgeProvider(snapshot(), native);
         expect(unpaired.deduplicateResults([hidden[0]])).toEqual([hidden[0]]);
+    });
+
+    it('keeps extension live-tab identities, query search and trusted commands independently of URL navigation', async () => {
+        const extensionUrl = `chrome-extension://${PEER_ID}/options.html`;
+        provider.snapshot.tabs[0].url = extensionUrl;
+        provider.snapshot.tabs[1].url = extensionUrl;
+        const authoritative = await provider.getOpenTabs();
+        expect(provider.deduplicateResults(authoritative)).toEqual(authoritative);
+        const generic = [
+            new SearchResult({ type: ResultType.OPEN_TAB, title: 'Live extension page', url: extensionUrl, metadata: { tabId: 21 } }),
+            new SearchResult({ type: ResultType.PINNED_TAB, title: 'Live favorite', url: extensionUrl + '?favorite', metadata: { tabId: 22 } }),
+            new SearchResult({ type: ResultType.SEARCH_QUERY, title: 'Search extension address', url: extensionUrl + '?search', metadata: { query: extensionUrl } }),
+            new SearchResult({ type: ResultType.AUTOCOMPLETE_SUGGESTION, title: 'Search suggestion', url: extensionUrl + '?query', metadata: { isUrl: false, query: extensionUrl } }),
+            new SearchResult({ type: 'arcify-sidebar-command', title: 'Open Arcify sidebar', url: '' })
+        ];
+        expect(provider.deduplicateResults(generic)).toEqual(generic);
+    });
+
+    it.each(['getLocalSuggestions', 'getSpotlightSuggestions'])('filters current-peer helper URL variants across the %s pipeline', async method => {
+        const helper = `chrome-extension://${PEER_ID}/startup-launcher.html`;
+        provider.getBookmarksData.mockResolvedValue([
+            { id: 'helper', title: 'Open Arcify sidebar', url: helper + '/' },
+            { id: 'web', title: 'Open Arcify sidebar', url: 'https://example.test/sidebar' }
+        ]);
+        vi.spyOn(provider, 'getHistoryData').mockResolvedValue([
+            { title: 'Open Arcify sidebar', url: `chrome-extension://${PEER_ID}/dist/startup-launcher.html` },
+            { title: 'Open Arcify sidebar', url: helper + '?source=startup#start' }
+        ]);
+        vi.spyOn(provider, 'getTopSitesData').mockResolvedValue([]);
+        const results = await provider[method]('open');
+        expect(results.some(result => result.url.startsWith('chrome-extension:'))).toBe(false);
+        expect(results.some(result => result.metadata.bookmarkId === 'web')).toBe(true);
+        expect(api.storage.local.set).not.toHaveBeenCalled();
     });
 
     it('supports matching workspace names without mutating or caching the snapshot', async () => {

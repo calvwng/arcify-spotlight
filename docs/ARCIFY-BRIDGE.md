@@ -262,9 +262,14 @@ Relevant removal, replacement and cross-window movement events invalidate the li
 list. Visible pages coalesce refreshes, preserve the user's typed query/selection,
 and reject late responses; hidden pages refresh on return. A stale-action rejection
 evicts the invalid tab choice and refreshes without replaying the action or silently
-selecting an unrelated fallback under held Enter. An exact known Arcify startup
-helper URL is not offered as a generic paired navigation result alongside the real
-sidebar command; this is not a blanket filter on similarly named bookmarks/pages.
+selecting an unrelated fallback under held Enter. Generic paired URL-navigation
+choices must satisfy the existing bridge URL allowlist. Unsupported extension-page
+history/bookmark/top-site choices (including helper URL variants) are therefore
+omitted rather than offered as commands that cannot execute. This does not delete
+stored data, discard ID-based live extension tabs, hide similarly named supported
+websites, or change standalone behavior. A stale unsupported generic row fails
+locally with a clear message before navigation dispatch and never uses native
+fallback. The real sidebar command retains its separate trusted-gesture path.
 
 Paired tab refreshes are scoped to the source window. Standalone new-tab/helper
 results can span windows and refresh accordingly; standalone content overlays still

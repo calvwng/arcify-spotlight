@@ -47,6 +47,48 @@ describe('authoritative Arcify action routing', () => {
         await handleBridgeResult(bridge, api, { type: 'url-suggestion', url: 'https://example.com' }, 'new-tab', context);
         expect(bridge.request).toHaveBeenCalledExactlyOnceWith('openTab', 2, { url: 'https://example.com' }, peerId);
     });
+    it.each(['current-tab', 'new-tab'])('rejects unsupported generic navigation in %s mode before dispatch', async mode => {
+        for (const type of ['history', 'bookmark', 'top-site', 'url-suggestion', 'autocomplete-suggestion']) {
+            for (const url of [`chrome-extension://${peerId}/startup-launcher.html`,
+                `chrome-extension://${peerId}/startup-launcher.html/`,
+                `chrome-extension://${peerId}/dist/startup-launcher.html`,
+                'javascript:alert(1)', 'data:text/html,hello', 'https://example.test/' + 'x'.repeat(16384)]) {
+                await expect(handleBridgeResult(bridge, api, { type, url, metadata: { isUrl: true } }, mode, context))
+                    .rejects.toMatchObject({ code: 'UNSUPPORTED_URL', message: expect.stringContaining('cannot be opened through the Arcify connection') });
+            }
+        }
+        expect(bridge.request).not.toHaveBeenCalled();
+        expect(api.tabs.create).not.toHaveBeenCalled();
+        expect(api.tabs.update).not.toHaveBeenCalled();
+        expect(api.search.query).not.toHaveBeenCalled();
+    });
+    it.each(['http://example.test/', 'https://example.test/', 'file:///tmp/notes.txt', 'chrome://settings/', 'about:blank'])('retains supported generic navigation to %s', async url => {
+        await handleBridgeResult(bridge, api, { type: 'bookmark', url }, 'new-tab', context);
+        expect(bridge.request).toHaveBeenCalledExactlyOnceWith('openTab', 2, { url }, peerId);
+    });
+    it.each(['open-tab', 'pinned-tab'])('activates a live extension %s by identity rather than rejecting its URL', async type => {
+        const url = `chrome-extension://${peerId}/options.html`;
+        for (const result of [
+            { ...owned('tab', { tabId: 21 }), type, url },
+            { type, url, metadata: { tabId: 21 } }
+        ]) {
+            await expect(handleBridgeResult(bridge, api, result, 'current-tab', context))
+                .resolves.toMatchObject({ handled: true, command: 'activateTab' });
+        }
+        expect(bridge.request).toHaveBeenCalledTimes(2);
+        expect(bridge.request).toHaveBeenLastCalledWith('activateTab', 2, { tabId: 21 }, peerId);
+    });
+    it('leaves authoritative saved pins to Arcify for fresh bookmark validation', async () => {
+        const result = { ...owned('bookmark', { bookmarkId: 'pin-1' }), url: `chrome-extension://${peerId}/options.html` };
+        await handleBridgeResult(bridge, api, result, 'new-tab', context);
+        expect(bridge.request).toHaveBeenCalledExactlyOnceWith('openBookmark', 2, { spaceId: 'work', bookmarkId: 'pin-1' }, peerId);
+    });
+    it('leaves standalone extension URL navigation to the upstream router', async () => {
+        bridge.getPeerId.mockResolvedValue(null);
+        expect(await handleBridgeResult(bridge, api, { type: 'history', url: `chrome-extension://${peerId}/options.html` }, 'new-tab', context)).toBe(false);
+        expect(bridge.snapshot).not.toHaveBeenCalled();
+        expect(bridge.request).not.toHaveBeenCalled();
+    });
     it.each(['search-query', 'autocomplete-suggestion'])('uses Chrome default search engine for %s', async type => {
         await handleBridgeResult(bridge, api, { type, metadata: { query: 'hello world' } }, 'new-tab', context);
         expect(bridge.request).toHaveBeenCalledExactlyOnceWith('openTab', 2, { url: 'about:blank' }, peerId);

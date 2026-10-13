@@ -2,6 +2,7 @@
 import { BackgroundDataProvider } from './background-data-provider.js';
 import { SearchResult, ResultType } from '../search-types.js';
 import { FuseSearchService } from '../fuse-search-service.js';
+import { isSafeUrl } from '../arcify-bridge-protocol.js';
 
 export class ArcifyBridgeProvider extends BackgroundDataProvider {
     constructor(snapshot, nativeProvider, peerId = null, { excludeTabId = null } = {}) {
@@ -72,11 +73,14 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
         for (const result of results) {
             const owner = result.metadata?.arcifyBridge;
             if (!owner) {
-                // The paired launcher is a control surface, already represented by
-                // the gesture-safe command. Hide only this exact helper suggestion;
-                // saved bookmark data, unrelated extension pages and names are intact.
-                const helperUrl = this.peerId && `chrome-extension://${this.peerId}/startup-launcher.html`;
-                if (helperUrl && result.url?.split(/[?#]/)[0] === helperUrl) continue;
+                // Offer only URL destinations the paired navigation command can
+                // execute. In particular, extension-page history is not a sidebar
+                // command. Live tabs still activate by ID, and query/command rows
+                // do not navigate their display URL. Stored data is never changed.
+                const navigatesUrl = ![ResultType.OPEN_TAB, ResultType.PINNED_TAB,
+                    ResultType.SEARCH_QUERY, 'arcify-sidebar-command'].includes(result.type)
+                    && !(result.type === ResultType.AUTOCOMPLETE_SUGGESTION && !result.metadata?.isUrl);
+                if (this.peerId && navigatesUrl && result.url && !isSafeUrl(result.url)) continue;
                 ordinary.push(result); continue;
             }
             if (owner.kind === 'tab' && matchedBookmarkTabs.has(owner.tabId)) continue;
