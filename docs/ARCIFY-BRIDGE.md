@@ -101,8 +101,9 @@ New Tab UI and focus behavior are unchanged; initial omnibox focus remains a
 manual check.
 
 Search also retains ordinary bookmarks, history, top sites, and autocomplete.
-Workspace tab order comes from Arcify; global Chrome-pinned favorites and unowned
-pages follow those tabs. A missing bookmark folder produces a visible warning;
+Workspace tab order comes from Arcify; native Chrome-pinned tabs and unowned
+pages follow those tabs. Matching saved-Favorite builds also include the ordered
+shared Favorites list, including closed records. A missing bookmark folder produces a visible warning;
 other folders and live tabs remain usable, without guessing a missing pin by URL.
 
 ## What the bookmark folder can and cannot do alone
@@ -169,7 +170,8 @@ endpoint. Every request contains:
   Unsupported commands, versions, surplus fields, and malformed payloads are rejected.
 - Spotlight → Arcify: `hello`, `snapshot`, `activateSpace {spaceId}`,
   `activateTab {tabId}`, `openTab {url, spaceId?}`, `navigateTab {tabId, url}`,
-  `openBookmark {spaceId, bookmarkId}`.
+  `openBookmark {spaceId, bookmarkId}`, and optional `openFavorite {favoriteId}`
+  when the authenticated peer advertises `persistentFavorites`.
 - Arcify → Spotlight: `hello`, `launch {mode}`, where mode is `current-tab` or
   `new-tab`. Arcify's sidebar currently requests `new-tab` mode.
 - Success: `{type, version, requestId, role, ok:true, extensionId?, snapshot?, tabId?}`.
@@ -269,6 +271,56 @@ That run explicitly focused Spotlight before Enter; it did not test browser-star
 focus or Helium. Later logical-state invalidation changes require their own exact-head run;
 see the linked draft PRs for current results. Mocked module/DOM tests remain distinct
 from this browser evidence.
+
+## Persistent saved Favorites (optional capability)
+
+Matching Arcify builds advertise `persistentFavorites` on `hello`. The optional
+ordered snapshot field is `favorites: [{id, title, url, sourceBookmarkId, tabId}]`.
+Each record has exactly those five fields: IDs are nonempty strings up to 200
+characters, title is a string up to 4096 characters, URL is HTTP(S) only, and `sourceBookmarkId` and `tabId` may be null. Favorite IDs, non-null
+source bookmark IDs, and live bindings are unique. A bound tab must be the exact
+pinned, unowned tab in the requested window, outside all Space memberships.
+Source bookmark provenance does not require the original bookmark to still exist.
+
+Arcify owns the profile-local saved list shared across normal windows and Spaces;
+Spotlight keeps no separate list or persistent capability cache. When a snapshot
+contains Favorites, Spotlight authenticates `hello` and uses its fresh snapshot
+only after confirming the optional capability. Older peers omitting the field
+retain their existing behavior. Data without the capability, malformed records,
+wrong-window bindings and unsupported URLs fail visibly instead of implying
+ownership. This preserves the bookmark-to-Favorites HTTP(S) boundary; generic
+bridge navigation retains its existing broader URL allowlist. Native-only pinned
+internal or local-file pages remain ordinary live tabs, outside saved Favorites. This requires no new manifest permissions.
+
+- Empty search shows Favorites in saved order, including closed ones. Typed search
+  matches their saved titles/URLs even when the exact live tab navigated elsewhere.
+- Favorite results have a star icon, a **Saved Favorite** subtitle, and **Open
+  Favorite** or **Switch to Favorite** action. Native pinned tabs retain their own
+  **Open Pinned Tab** label; standalone Spotlight does not claim saved ownership.
+- Selection remains keyed by Favorite ID, peer and window across title, URL,
+  binding and order changes. Equal-title/URL Favorites remain separate. A saved
+  Favorite suppresses only its matching live tab ID when both match the query;
+  source Space bookmarks remain independent destinations. URLs never assign
+  ownership or bind restored tabs.
+- Ctrl+W removes the live binding, leaving the saved result. Clicking it activates
+  its exact bound tab or asks Arcify to reopen the saved address in this window.
+  Both Spotlight navigation modes use `openFavorite {favoriteId}`, never generic
+  navigation, source-bookmark mutation, or a guessed same-URL tab.
+- Each action obtains a fresh capability-checked snapshot, verifies the Favorite
+  still exists and the source tab still belongs to this window, then dispatches
+  the exact ID. The returned tab ID must match that Favorite’s fresh binding. Revoked pairing, unsupported peers, stale records, timeouts and
+  failed Favorite commands never fall back to opening the display URL or retry.
+- Arcify record/order/binding notifications use the existing trusted `invalidate`
+  path. Refresh preserves typed text/manual selection and rejects stale async
+  generations. Deleting the selected record leaves nothing selected, so held Enter
+  cannot run an unrelated replacement. Hidden pages refresh upon return.
+
+The list survives browser restarts but does not sync across devices. Exact live
+bindings are session-local; restored tabs are not adopted by guessing. Original
+bookmarks remain intact and **Remove Favorite** is a separate Arcify action.
+The new unit and real-module DOM regressions use mocked Chrome APIs; actual
+browser/worker-restart acceptance must be verified separately on the exact paired
+builds in the approved CI environment.
 
 ## Live-tab results and helper identity
 

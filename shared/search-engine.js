@@ -156,7 +156,7 @@ export class SearchEngine {
                     break;
 
                 case ResultType.PINNED_TAB:
-                    // Chrome-pinned tabs (Arcify "favorites") — same switch logic as OPEN_TAB
+                    // Native Chrome-pinned tabs — same switch logic as OPEN_TAB
                     if (mode === SpotlightTabMode.NEW_TAB) {
                         if (!result.metadata?.tabId) {
                             throw new Error('PINNED_TAB result missing tabId in metadata');

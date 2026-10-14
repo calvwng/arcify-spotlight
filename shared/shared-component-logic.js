@@ -77,6 +77,8 @@ export class SharedSpotlightLogic {
             const formatted = SpotlightUtils.formatResult(result, mode, activeGroupName);
             const isSelected = index === 0; // First result is always selected by default
             const chipHtml = SpotlightUtils.generateSpaceChipHTML(result);
+            const favoriteIdentity = result.type === ResultType.SAVED_FAVORITE && result.metadata?.arcifyBridge?.kind === 'favorite'
+                ? ` data-favorite-id="${SpotlightUtils.escapeHtml(result.metadata.arcifyBridge.favoriteId)}"` : '';
 
             // If chip exists, wrap URL text in span for flex layout; otherwise keep as text node
             const urlContent = formatted.subtitle
@@ -88,7 +90,7 @@ export class SharedSpotlightLogic {
             return `
                 <button class="arcify-spotlight-result-item ${isSelected ? 'selected' : ''}"
                         data-index="${index}"
-                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"
+                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"${favoriteIdentity}
                         data-testid="spotlight-result">
                     <img class="arcify-spotlight-result-favicon"
                          src="${SpotlightUtils.getFaviconUrl(result)}"

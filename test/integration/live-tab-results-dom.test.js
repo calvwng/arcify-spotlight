@@ -8,7 +8,7 @@ import './setup.js';
 const PEER = 'a'.repeat(32);
 const OWN = 'b'.repeat(32);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let live, sourceId, sourceUrl, page, registrationTarget, backgroundListeners, pageListeners, externalListeners, contextDelay, logicalSpaces, snapshotHook;
+let live, sourceId, sourceUrl, page, registrationTarget, backgroundListeners, pageListeners, externalListeners, contextDelay, logicalSpaces, snapshotHook, savedFavorites;
 const event = () => {
     const listeners = new Set();
     return { addListener: vi.fn(fn => listeners.add(fn)), removeListener: vi.fn(fn => listeners.delete(fn)), emit: (...args) => [...listeners].forEach(fn => fn(...args)) };
@@ -19,7 +19,8 @@ const snapshot = windowId => ({ windowId, activeSpaceId: 'home', capturedAt: Dat
         const tabIds = (space.order || live.map(t => t.id)).filter(id => live.some(t => t.id === id && t.windowId === windowId && t.spaceId === space.id));
         return { id: space.id, name: space.name, color: space.color, tabIds, pinnedTabIds: [], temporaryTabIds: tabIds };
     }),
-    tabs: live.filter(t => t.windowId === windowId).map(t => ({ ...t })), bookmarks: [] });
+    tabs: live.filter(t => t.windowId === windowId).map(t => ({ ...t })), bookmarks: [],
+    ...(savedFavorites === undefined ? {} : { favorites: savedFavorites.map(favorite => ({ ...favorite })) }) });
 function dispatch(listeners, message, sender) {
     return new Promise(resolve => {
         let pending = false, answered = false;
@@ -54,7 +55,7 @@ beforeEach(async () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     HTMLElement.prototype.scrollIntoView = () => {};
     delete window.arcifyCurrentTabId;
-    sourceId = 12; sourceUrl = chromeMock.runtime.getURL('newtab.html'); contextDelay = null; snapshotHook = null;
+    savedFavorites = undefined; sourceId = 12; sourceUrl = chromeMock.runtime.getURL('newtab.html'); contextDelay = null; snapshotHook = null;
     logicalSpaces = [{ id: 'home', name: 'Home', color: 'blue' }];
     live = [tab(11), tab(12)]; backgroundListeners = []; pageListeners = []; externalListeners = [];
     chromeMock.runtime.onMessage.addListener.mockImplementation(listener => registrationTarget.push(listener));
@@ -76,7 +77,7 @@ beforeEach(async () => {
     chromeMock.runtime.sendMessage.mockImplementation((target, request, callback) => {
         if (target === PEER) {
             const response = { type: 'arcify-bridge', version: 1, role: 'arcify', extensionId: PEER, requestId: request.requestId, ok: true,
-                snapshot: snapshot(request.windowId), capabilities: ['openSidebar'], ...(request.tabId ? { tabId: request.tabId } : {}) };
+                snapshot: snapshot(request.windowId), capabilities: ['openSidebar', ...(savedFavorites === undefined ? [] : ['persistentFavorites'])], ...(request.tabId ? { tabId: request.tabId } : {}) };
             if (!snapshotHook?.(request, response, callback)) callback(response);
             return;
         }
@@ -322,5 +323,162 @@ describe('paired logical Arcify changes in the real result DOM', () => {
         };
         await invalidate(); await vi.waitFor(() => expect(shownIds()).toEqual([]));
         expect(chromeMock.tabs.update).not.toHaveBeenCalled(); expect(bridgeMutations()).toHaveLength(0);
+    });
+});
+
+const saved = (id, tabId = null) => ({ id, title: 'Saved budget', url: 'https://example.test/budget', sourceBookmarkId: null, tabId });
+const favoriteRows = () => [...page.resultsContainer.querySelectorAll('[data-result-type="arcify-favorite"]')];
+const favoriteIds = () => page.selectionManager.results.filter(result => result.type === 'arcify-favorite').map(result => result.metadata.favoriteId);
+async function openFavorites() {
+    const { initializeSpotlight } = await import('../../newtab.js');
+    page = await initializeSpotlight();
+    await page.sidebarCommand.ready; await page.startupSuggestion.ready;
+    await vi.waitFor(() => expect(favoriteIds()).toEqual(savedFavorites.map(favorite => favorite.id)));
+}
+
+describe('persistent Favorites in the real new-tab result lifecycle', () => {
+    it('refreshes shared saved order and new closed records without native events, preserving a manually chosen identity', async () => {
+        savedFavorites = [saved('first'), saved('second')];
+        await openFavorites();
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+        expect(page.selectionManager.getSelectedResult().metadata.favoriteId).toBe('second');
+        expect(favoriteRows().map(row => row.dataset.favoriteId)).toEqual(['first', 'second']);
+        const input = page.input, container = page.resultsContainer;
+        savedFavorites = [saved('second'), saved('third'), saved('first')];
+        await invalidate(); await vi.waitFor(() => expect(favoriteIds()).toEqual(['second', 'third', 'first']));
+        expect(page.selectionManager.getSelectedResult().metadata.favoriteId).toBe('second');
+        expect(page.input).toBe(input); expect(page.resultsContainer).toBe(container);
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('keeps the saved row selected after Ctrl+W-like tab removal, with a closed action label', async () => {
+        Object.assign(live.find(t => t.id === 11), { pinned: true, spaceId: null });
+        savedFavorites = [saved('first', 11), saved('second')];
+        await openFavorites();
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }));
+        expect(favoriteRows()[0].textContent).toContain('Switch to Favorite');
+        savedFavorites[0].tabId = null; closeTab(11); await invalidate();
+        await vi.waitFor(() => expect(favoriteRows()[0].textContent).toContain('Open Favorite'));
+        expect(favoriteIds()).toEqual(['first', 'second']);
+        expect(page.selectionManager.getSelectedResult().metadata.favoriteId).toBe('first');
+        expect(page.selectionManager.getSelectedResult().metadata.tabId).toBeNull();
+        expect(window.close).not.toHaveBeenCalled(); expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('preserves the real typed query and manual saved identity across binding and title changes', async () => {
+        savedFavorites = [saved('first'), saved('second')]; await openFavorites();
+        page.input.value = 'budget'; page.input.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.waitFor(() => expect(favoriteIds()).toHaveLength(2)); await pause(30);
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+        await vi.waitFor(() => expect(page.selectionManager.getSelectedResult()?.metadata.favoriteId).toBe('first'));
+        const preview = page.input.value;
+        Object.assign(live.find(t => t.id === 11), { pinned: true, spaceId: null });
+        savedFavorites[0] = { ...saved('first', 11), title: 'Updated budget title' };
+        await invalidate();
+        await vi.waitFor(() => expect(page.selectionManager.getSelectedResult()?.title).toBe('Updated budget title'));
+        expect(page.selectionManager.getSelectedResult().metadata.favoriteId).toBe('first');
+        expect(page.input.value).toBe(preview);
+        expect(chromeMock.runtime.sendMessage.mock.calls.filter(([m]) => m?.action === 'getLocalSuggestions').every(([m]) => m.query === 'budget')).toBe(true);
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('drops the selected removed Favorite without silently selecting a URL twin under Enter', async () => {
+        savedFavorites = [saved('first'), saved('second')]; await openFavorites();
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home' }));
+        savedFavorites.shift(); await invalidate();
+        await vi.waitFor(() => expect(favoriteIds()).toEqual(['second']));
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true }));
+        page.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); await pause(20);
+        expect(bridgeMutations()).toHaveLength(0); expect(actions()).toHaveLength(0);
+    });
+    it('rejects a removed Favorite at action time, refreshing without replay or ordinary-URL fallback', async () => {
+        savedFavorites = [saved('first'), saved('second')]; await openFavorites();
+        savedFavorites.shift(); favoriteRows()[0].click();
+        await vi.waitFor(() => expect(document.querySelector('[role="status"]').textContent).toContain('That Favorite was removed'));
+        await vi.waitFor(() => expect(favoriteIds()).toEqual(['second']));
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        expect(bridgeMutations()).toHaveLength(0); expect(actions()).toHaveLength(1);
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled();
+    });
+    it('discards a late authenticated hello snapshot after a newer Favorite invalidation', async () => {
+        savedFavorites = [saved('first'), saved('second')]; await openFavorites(); let release;
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'hello') return false;
+            snapshotHook = null; release = () => callback(response); return true;
+        };
+        page.input.value = 'budget'; page.input.dispatchEvent(new Event('input', { bubbles: true }));
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        savedFavorites = [saved('second')]; await invalidate();
+        await vi.waitFor(() => expect(favoriteIds()).toEqual(['second']));
+        release(); await pause(60);
+        expect(favoriteIds()).toEqual(['second']); expect(page.input.value).toBe('budget');
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('does not refresh from revoked peer Favorite notifications or revive obsolete capability checks', async () => {
+        savedFavorites = [saved('first')]; await openFavorites(); let release;
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'hello') return false;
+            snapshotHook = null; release = () => callback(response); return true;
+        };
+        await invalidate(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+        chromeMock.storage.local.get.mockResolvedValue({}); release();
+        await vi.waitFor(() => expect(favoriteIds()).toEqual([]));
+        expect(await invalidate()).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+        expect(shownIds()).toEqual([]); expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('ignores hidden/disposed-page notifications and refreshes saved state upon return', async () => {
+        savedFavorites = [saved('first')]; await openFavorites();
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+        savedFavorites = [saved('second')]; await invalidate(); await pause(130);
+        expect(favoriteIds()).toEqual(['first']);
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.waitFor(() => expect(favoriteIds()).toEqual(['second']));
+        page.dispose(); savedFavorites = [saved('third')]; await invalidate(); await pause(130);
+        expect(favoriteIds()).toEqual(['second']); expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('dispatches a closed Favorite click through the real router and validates its newly bound tab', async () => {
+        savedFavorites = [saved('first')]; await openFavorites();
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'openFavorite') return false;
+            live.push({ ...tab(30), url: savedFavorites[0].url, title: savedFavorites[0].title, pinned: true, spaceId: null });
+            savedFavorites[0].tabId = 30;
+            callback({ ...response, tabId: 30, snapshot: snapshot(request.windowId) }); return true;
+        };
+        favoriteRows()[0].click();
+        await vi.waitFor(() => expect(bridgeMutations()).toHaveLength(1)); await pause(10);
+        expect(bridgeMutations()[0][1]).toMatchObject({ command: 'openFavorite', favoriteId: 'first', windowId: 2 });
+        expect(savedFavorites[0].tabId).toBe(30);
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled();
+        expect(document.querySelector('[role="status"]')?.textContent || '').not.toContain('invalid');
+    });
+    it('opens a closed Favorite only by its ID and keeps an unsupported command error visible', async () => {
+        savedFavorites = [saved('first')]; await openFavorites();
+        snapshotHook = (request, response, callback) => {
+            if (request.command !== 'openFavorite') return false;
+            callback({ ...response, ok: false, error: { code: 'UNSUPPORTED', message: 'Saved Favorites unsupported. Update Arcify.' } }); return true;
+        };
+        favoriteRows()[0].click();
+        await vi.waitFor(() => expect(document.querySelector('[role="status"]').textContent).toContain('Saved Favorites unsupported'));
+        expect(bridgeMutations()).toHaveLength(1);
+        expect(bridgeMutations()[0][1]).toMatchObject({ command: 'openFavorite', windowId: 2, favoriteId: 'first' });
+        expect(bridgeMutations()[0][1]).not.toHaveProperty('url');
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled(); expect(window.close).not.toHaveBeenCalled();
+    });
+    it('revalidates saved Favorites after a mocked cold background-worker restart', async () => {
+        savedFavorites = [saved('first')]; await openFavorites();
+        backgroundListeners = []; externalListeners = []; registrationTarget = backgroundListeners;
+        vi.resetModules(); await import('../../background.js'); registrationTarget = pageListeners;
+        savedFavorites = [saved('second')]; const before = readCount(); await invalidate();
+        await vi.waitFor(() => expect(favoriteIds()).toEqual(['second']));
+        expect(readCount()).toBeGreaterThan(before);
+        expect(chromeMock.runtime.sendMessage.mock.calls.some(([target, request]) => target === PEER && request.command === 'hello')).toBe(true);
+        expect(bridgeMutations()).toHaveLength(0);
+    });
+    it('does not expose saved-Favorite ownership when used standalone', async () => {
+        savedFavorites = [saved('first')]; chromeMock.storage.local.get.mockResolvedValue({});
+        live.find(t => t.id === 11).pinned = true;
+        const response = await internal({ action: 'getSpotlightSuggestions', query: '', mode: 'current-tab' });
+        expect(response.results.every(result => result.type !== 'arcify-favorite' && !result.metadata.arcifyBridge)).toBe(true);
+        const { SpotlightUtils } = await import('../../shared/ui-utilities.js');
+        expect(SpotlightUtils.formatResult(response.results[0], 'new-tab').action).toBe('Open Pinned Tab');
     });
 });

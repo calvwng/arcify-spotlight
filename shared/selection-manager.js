@@ -8,7 +8,7 @@ export function resultIdentity(result) {
     if (result.type === 'arcify-sidebar-command') return JSON.stringify([result.type, metadata.sidebarPeerId]);
     const owner = metadata.arcifyBridge;
     if (owner) return JSON.stringify(['arcify', owner.peerId, owner.windowId, owner.kind,
-        ...(owner.kind === 'tab' ? [owner.tabId] : [owner.spaceId, owner.bookmarkId])]);
+        ...(owner.kind === 'tab' ? [owner.tabId] : owner.kind === 'favorite' ? [owner.favoriteId] : [owner.spaceId, owner.bookmarkId])]);
     if (['open-tab', 'pinned-tab'].includes(result.type) && metadata.tabId != null) return JSON.stringify(['tab', metadata.tabId]);
     if (metadata.tabId != null) return JSON.stringify([result.type, 'tab', metadata.tabId]);
     if (metadata.bookmarkId != null) return JSON.stringify([result.type, 'bookmark', metadata.bookmarkId]);

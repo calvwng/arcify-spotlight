@@ -142,6 +142,9 @@ export class SpotlightUtils {
             // #2d2d2d surface and white, without depending on host-page theme.
             return `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>')}`;
         }
+        if (result.type === ResultType.SAVED_FAVORITE) {
+            return `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.5 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9Z"/></svg>')}`;
+        }
         if (result.favicon && result.favicon.startsWith('http')) {
             return result.favicon;
         }
@@ -179,8 +182,10 @@ export class SpotlightUtils {
         const owner = result.metadata?.arcifyBridge;
         if (owner) {
             const action = owner.kind === 'space' ? 'Switch Workspace'
-                : owner.kind === 'bookmark' ? 'Open Pinned Tab' : 'Switch to Tab';
-            return { title: result.title, subtitle: owner.kind === 'space' ? 'Arcify workspace' : result.domain, action };
+                : owner.kind === 'bookmark' ? 'Open Pinned Tab'
+                : owner.kind === 'favorite' ? (result.metadata.tabId ? 'Switch to Favorite' : 'Open Favorite') : 'Switch to Tab';
+            return { title: result.title, subtitle: owner.kind === 'space' ? 'Arcify workspace'
+                : owner.kind === 'favorite' ? `Saved Favorite • ${result.domain || result.url}` : result.domain, action };
         }
 
         const formatters = {
@@ -210,7 +215,7 @@ export class SpotlightUtils {
             [ResultType.PINNED_TAB]: {
                 title: result.title,
                 subtitle: result.domain,
-                action: 'Open Favorite Tab'
+                action: 'Open Pinned Tab'
             },
             [ResultType.BOOKMARK]: {
                 title: result.title,

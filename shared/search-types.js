@@ -19,6 +19,7 @@ export const ResultType = {
     AUTOCOMPLETE_SUGGESTION: 'autocomplete-suggestion',
     OPEN_TAB: 'open-tab',
     PINNED_TAB: 'pinned-tab',
+    SAVED_FAVORITE: 'arcify-favorite',
     BOOKMARK: 'bookmark',
     HISTORY: 'history',
     TOP_SITE: 'top-site'

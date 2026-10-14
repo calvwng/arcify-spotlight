@@ -18,10 +18,16 @@ export function isSafeUrl(value) {
     try { return ['http:', 'https:', 'file:', 'chrome:'].includes(new URL(value).protocol); }
     catch { return false; }
 }
+// Saved Favorites preserve the narrower bookmark-drop HTTP(S) boundary.
+export function isFavoriteUrl(value) {
+    if (typeof value !== 'string' || value.length > 16384) return false;
+    try { return ['http:', 'https:'].includes(new URL(value).protocol); }
+    catch { return false; }
+}
 const commandFields = {
     hello: [], snapshot: [], invalidate: [], activateSpace: ['spaceId'], activateTab: ['tabId'],
     openTab: ['url', 'spaceId'], navigateTab: ['tabId', 'url'],
-    openBookmark: ['spaceId', 'bookmarkId'], launch: ['mode'], startupSuggestion: ['tabId']
+    openBookmark: ['spaceId', 'bookmarkId'], openFavorite: ['favoriteId'], launch: ['mode'], startupSuggestion: ['tabId']
 };
 export function validateRequest(message, commands) {
     if (!message || typeof message !== 'object' || Array.isArray(message) || message.type !== BRIDGE_TYPE)
@@ -37,6 +43,7 @@ export function validateRequest(message, commands) {
         || ['activateTab', 'navigateTab', 'startupSuggestion'].includes(message.command) && !isTabId(message.tabId)
         || ['openTab', 'navigateTab'].includes(message.command) && !isSafeUrl(message.url)
         || message.command === 'openBookmark' && !isId(message.bookmarkId)
+        || message.command === 'openFavorite' && !isId(message.favoriteId)
         || message.command === 'launch' && !['current-tab', 'new-tab'].includes(message.mode))
         throw bridgeError('INVALID_REQUEST', 'Invalid command payload.');
     return message;

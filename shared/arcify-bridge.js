@@ -1,5 +1,5 @@
 /** Versioned, explicitly paired cross-extension transport. No workspace data is persisted. */
-import { BRIDGE_TYPE, BRIDGE_VERSION, PEER_KEY, trustedSender, sendBridgeRequest } from './arcify-bridge-protocol.js';
+import { BRIDGE_TYPE, BRIDGE_VERSION, PEER_KEY, trustedSender, sendBridgeRequest, isFavoriteUrl } from './arcify-bridge-protocol.js';
 export { BRIDGE_TYPE, BRIDGE_VERSION };
 export const PEER_STORAGE_KEY = PEER_KEY;
 export const EXTENSION_ID = /^[a-p]{32}$/;
@@ -89,6 +89,26 @@ export function validateSnapshot(snapshot, windowId) {
             fail('INVALID_RESPONSE', 'Arcify returned a pin bound to the wrong workspace.');
         }
     }
+    if (snapshot.favorites !== undefined) {
+        if (!Array.isArray(snapshot.favorites)) fail('INVALID_RESPONSE', 'Arcify returned invalid saved Favorites.');
+        const ids = new Set(), bindings = new Set(), sources = new Set();
+        const id = value => typeof value === 'string' && value.length > 0 && value.length <= 200;
+        for (const favorite of snapshot.favorites) {
+            if (!favorite || typeof favorite !== 'object' || Array.isArray(favorite) ||
+                Object.keys(favorite).some(key => !['id', 'title', 'url', 'sourceBookmarkId', 'tabId'].includes(key)) ||
+                !id(favorite.id) || ids.has(favorite.id) || typeof favorite.title !== 'string' ||
+                favorite.title.length > 4096 || !isFavoriteUrl(favorite.url) ||
+                !(favorite.sourceBookmarkId === null || id(favorite.sourceBookmarkId)) ||
+                (favorite.sourceBookmarkId !== null && sources.has(favorite.sourceBookmarkId)) ||
+                (favorite.tabId !== null && (!positiveInt(favorite.tabId) || bindings.has(favorite.tabId) ||
+                    !tabById.get(favorite.tabId)?.pinned || tabById.get(favorite.tabId)?.spaceId !== null))) {
+                fail('INVALID_RESPONSE', 'Arcify returned invalid saved Favorite identity or binding.');
+            }
+            ids.add(favorite.id);
+            if (favorite.sourceBookmarkId !== null) sources.add(favorite.sourceBookmarkId);
+            if (favorite.tabId !== null) bindings.add(favorite.tabId);
+        }
+    }
     return snapshot;
 }
 
@@ -131,11 +151,35 @@ export class ArcifyBridgeClient {
         if (command === 'hello' && response.extensionId !== peerId) fail('INVALID_RESPONSE', 'The Arcify handshake did not match the paired extension ID.');
         if (await this.getPeerId() !== peerId) fail('DISCONNECTED', 'Arcify pairing changed while the request was in progress. Search again.');
         validateSnapshot(response.snapshot, windowId);
+        if (command === 'openFavorite' && (!positiveInt(response.tabId) ||
+            response.snapshot.favorites?.find(favorite => favorite.id === payload.favoriteId)?.tabId !== response.tabId)) {
+            fail('INVALID_RESPONSE', 'Arcify did not identify the opened Favorite. Refresh before trying again.');
+        }
+        if (command === 'hello') {
+            if (response.capabilities !== undefined && (!Array.isArray(response.capabilities) ||
+                response.capabilities.some(value => typeof value !== 'string' || !value || value.length > 200) ||
+                new Set(response.capabilities).size !== response.capabilities.length)) {
+                fail('INVALID_RESPONSE', 'Arcify returned invalid capabilities.');
+            }
+            if (response.capabilities?.includes('persistentFavorites') && !Array.isArray(response.snapshot.favorites)) {
+                fail('INVALID_RESPONSE', 'Arcify did not include its saved Favorites.');
+            }
+        }
         return response;
     }
 
     async snapshot(windowId, expectedPeerId = null) {
-        return (await this.request('snapshot', windowId, {}, expectedPeerId))?.snapshot || null;
+        const peerId = expectedPeerId || await this.getPeerId();
+        const response = await this.request('snapshot', windowId, {}, peerId);
+        if (!response) return null;
+        if (response.snapshot.favorites === undefined) return response.snapshot;
+        // Optional v1 data is usable only with an authenticated capability check.
+        // Never retain readiness across requests, worker suspension or revocation.
+        const hello = await this.request('hello', windowId, {}, peerId);
+        if (!hello?.capabilities?.includes('persistentFavorites')) {
+            fail('UNSUPPORTED', 'This Arcify build does not support saved Favorites. Update both extensions.');
+        }
+        return hello.snapshot;
     }
 
     async status(windowId) {
@@ -146,7 +190,7 @@ export class ArcifyBridgeClient {
             const response = await this.request('hello', windowId, {}, peerId);
             const warnings = response.snapshot.warnings || [];
             const warningText = warnings.length ? ` Some pinned bookmarks are unavailable. ${warnings.map(warning => warning.message).join(' ')}` : '';
-            const capabilities = Array.isArray(response.capabilities) ? response.capabilities.filter(value => value === 'openSidebar') : [];
+            const capabilities = Array.isArray(response.capabilities) ? response.capabilities.filter(value => ['openSidebar', 'persistentFavorites'].includes(value)) : [];
             return { configured: true, peerId, status: 'connected', capabilities, warnings, message: 'Connected to Arcify. Workspace changes are managed by Arcify.' + warningText };
         } catch (error) {
             // Another options tab can change pairing while the check is in flight.

@@ -1,12 +1,12 @@
 /** Route navigation through Arcify only while explicitly configured. */
 import { ArcifyBridgeError } from './arcify-bridge.js';
 import { ResultType, SpotlightTabMode } from './search-types.js';
-import { isSafeUrl } from './arcify-bridge-protocol.js';
+import { isSafeUrl, isFavoriteUrl } from './arcify-bridge-protocol.js';
 
 export async function handleBridgeResult(bridge, api, result, mode, context) {
     const peerId = await bridge.getPeerId();
     if (!peerId) {
-        if (result.metadata?.arcifyBridge) throw new ArcifyBridgeError('STALE_RESULT', 'Arcify was disconnected. Search again before selecting this result.');
+        if (result.metadata?.arcifyBridge || result.type === ResultType.SAVED_FAVORITE) throw new ArcifyBridgeError('STALE_RESULT', 'Arcify was disconnected. Search again before selecting this result.');
         return false;
     }
     if (!['current-tab', 'new-tab'].includes(mode)) throw new ArcifyBridgeError('INVALID_MODE', 'Unknown Spotlight navigation mode.');
@@ -22,7 +22,25 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
         }
         let command;
         let payload;
-        if (owner?.kind === 'space') {
+        if (owner?.kind === 'favorite' || result.type === ResultType.SAVED_FAVORITE) {
+            if (result.type !== ResultType.SAVED_FAVORITE || owner?.kind !== 'favorite' || owner.peerId !== peerId ||
+                typeof owner.favoriteId !== 'string' || !owner.favoriteId || owner.favoriteId.length > 200 ||
+                Object.keys(owner).some(key => !['kind', 'peerId', 'windowId', 'favoriteId'].includes(key)) ||
+                result.metadata.favoriteId !== owner.favoriteId) {
+                throw new ArcifyBridgeError('INVALID_RESULT', 'This saved Favorite result is invalid. Search again.');
+            }
+            if (!Array.isArray(snapshot.favorites)) {
+                throw new ArcifyBridgeError('UNSUPPORTED', 'This Arcify build does not support saved Favorites. Update both extensions.');
+            }
+            const favorite = snapshot.favorites.find(item => item.id === owner.favoriteId);
+            if (!favorite) throw new ArcifyBridgeError('STALE_RESULT', 'That Favorite was removed. Search again.');
+            if (!isFavoriteUrl(favorite.url)) throw new ArcifyBridgeError('UNSUPPORTED_URL', 'This saved Favorite address cannot be opened.');
+            let source;
+            try { source = await api.tabs.get(tabId); }
+            catch { throw new ArcifyBridgeError('STALE_TAB', 'The current tab closed. Search again.'); }
+            if (source?.windowId !== windowId) throw new ArcifyBridgeError('WRONG_WINDOW', 'The current tab moved to another window. Search again.');
+            command = 'openFavorite'; payload = { favoriteId: favorite.id };
+        } else if (owner?.kind === 'space') {
             command = 'activateSpace'; payload = { spaceId: owner.spaceId };
         } else if (owner?.kind === 'bookmark') {
             command = 'openBookmark'; payload = { spaceId: owner.spaceId, bookmarkId: owner.bookmarkId };

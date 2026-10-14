@@ -47,6 +47,23 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
 
     async getPinnedTabsData() { return []; }
 
+    async getPinnedTabSuggestions(query = '') {
+        return this.filter((this.snapshot.favorites || []).map(favorite => new SearchResult({
+            type: ResultType.SAVED_FAVORITE, title: favorite.title || favorite.url, url: favorite.url,
+            metadata: {
+                isArcify: true, favoriteId: favorite.id, sourceBookmarkId: favorite.sourceBookmarkId,
+                tabId: favorite.tabId, windowId: this.snapshot.windowId,
+                arcifyBridge: { kind: 'favorite', peerId: this.peerId, windowId: this.snapshot.windowId, favoriteId: favorite.id }
+            }
+        })), query);
+    }
+
+    async getDefaultResults() {
+        // Saved order is shared across Spaces; bindings are only for this window.
+        // Closed records stay visible and suppress only an exact, bound live tab.
+        return this.deduplicateResults([...await this.getPinnedTabSuggestions(), ...await this.getOpenTabs()]);
+    }
+
     async getBookmarkSuggestions(query) {
         const native = await super.getBookmarkSuggestions(query);
         const knownBookmarks = new Set(this.snapshot.bookmarks.map(item => item.id));
@@ -69,7 +86,7 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
         const bridge = [];
         const ordinary = [];
         const seen = new Set();
-        const matchedBookmarkTabs = new Set(results.filter(result => result.metadata?.arcifyBridge?.kind === 'bookmark' && result.metadata.tabId).map(result => result.metadata.tabId));
+        const matchedSavedTabs = new Set(results.filter(result => ['bookmark', 'favorite'].includes(result.metadata?.arcifyBridge?.kind) && result.metadata.tabId).map(result => result.metadata.tabId));
         for (const result of results) {
             const owner = result.metadata?.arcifyBridge;
             if (!owner) {
@@ -83,14 +100,15 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
                 if (this.peerId && navigatesUrl && result.url && !isSafeUrl(result.url)) continue;
                 ordinary.push(result); continue;
             }
-            if (owner.kind === 'tab' && matchedBookmarkTabs.has(owner.tabId)) continue;
-            const key = `${owner.kind}:${owner.spaceId}:${owner.tabId ?? owner.bookmarkId ?? ''}`;
+            if (owner.kind === 'tab' && matchedSavedTabs.has(owner.tabId)) continue;
+            const key = JSON.stringify([owner.kind, owner.spaceId, owner.favoriteId ?? owner.tabId ?? owner.bookmarkId]);
             if (!seen.has(key)) { seen.add(key); bridge.push(result); }
         }
         // Display-only URL deduplication suppresses generic history/top-site/bookmark
         // suggestions already represented by an authoritative identity. Never use this
-        // URL set to assign ownership or collapse distinct bridge choices.
-        const representedUrls = new Set(bridge.filter(result => result.url)
+        // URL set to assign ownership or collapse distinct bridge choices. Favorites
+        // only deduplicate their exact binding, including for ordinary bookmarks.
+        const representedUrls = new Set(bridge.filter(result => result.url && result.metadata.arcifyBridge.kind !== 'favorite')
             .map(result => this.normalizeUrlForDeduplication(result.url)));
         const remainingOrdinary = ordinary.filter(result => !result.url ||
             !representedUrls.has(this.normalizeUrlForDeduplication(result.url)));
@@ -99,6 +117,7 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
 
     calculateRelevanceScore(result, query) {
         return super.calculateRelevanceScore(result.type === 'arcify-space'
-            ? { ...result, type: ResultType.OPEN_TAB } : result, query);
+            ? { ...result, type: ResultType.OPEN_TAB } : result.type === ResultType.SAVED_FAVORITE
+                ? { ...result, type: ResultType.PINNED_TAB } : result, query);
     }
 }
