@@ -29,6 +29,7 @@ function callExternal(message, from = { id: peerId }) {
 const launch = (extra = {}) => ({ type: 'arcify-bridge', version: 1, requestId: 'test-request', command: 'launch', windowId: 2, mode: 'new-tab', ...extra });
 
 beforeEach(async () => {
+    chromeMock.storage.session ??= { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) };
     chromeMock.storage.local.get.mockImplementation(async key => key === 'arcifyBridgePeerId' ? { arcifyBridgePeerId: peerId } : {});
     chromeMock.storage.sync.get.mockResolvedValue({ enableSpotlight: true });
     chromeMock.runtime.sendMessage.mockImplementation((id, request, callback) => {
@@ -41,7 +42,7 @@ beforeEach(async () => {
 describe('Spotlight background bridge seams', () => {
     it('advertises additive startup capability without changing the v1 handshake', async () => {
         const response = await callExternal({ type: 'arcify-bridge', version: 1, requestId: 'hello-new', command: 'hello', windowId: 2 });
-        expect(response).toMatchObject({ type: 'arcify-bridge', version: 1, role: 'spotlight', ok: true, capabilities: ['startupSuggestion'] });
+        expect(response).toMatchObject({ type: 'arcify-bridge', version: 1, role: 'spotlight', ok: true, capabilities: ['startupSuggestion', 'favoriteContinuityWitnessV1'] });
     });
     it('authenticates and validates a startup offer before relaying only to extension pages', async () => {
         chromeMock.tabs.get.mockResolvedValue({ id: 42, windowId: 2, active: true, url: chromeMock.runtime.getURL('newtab.html') });
@@ -58,7 +59,7 @@ describe('Spotlight background bridge seams', () => {
         expect(response.success).toBe(true);
         expect(response.results.some(item => item.metadata?.arcifyBridge?.tabId === 43)).toBe(true);
         expect(response.results.some(item => item.metadata?.arcifyBridge?.bookmarkId === 'closed-pin')).toBe(true);
-        expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(peerId, expect.objectContaining({ command: 'snapshot', windowId: 2 }), expect.any(Function));
+        expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(peerId, expect.objectContaining({ command: 'hello', windowId: 2 }), expect.any(Function));
         expect(chromeMock.storage.local.set).not.toHaveBeenCalled();
     });
     it('uses the source tab identity rather than a spoofed message tab ID', async () => {
@@ -160,7 +161,7 @@ describe('Spotlight background bridge seams', () => {
         });
         const response = await callInternal({ action: 'arcifyBridgeConfigure', peerId: '' }, { id: ownId, url: chromeMock.runtime.getURL('options.html') });
         expect(response).toMatchObject({ success: true, status: { configured: false, status: 'disabled' } });
-        expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: '' });
+        expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: '', arcifyBridgePairingGeneration: expect.any(String) });
     });
     it('saves from options before reciprocal approval and connects on a later read-only refresh', async () => {
         const optionsSender = { id: ownId, url: chromeMock.runtime.getURL('options.html') };
@@ -176,7 +177,7 @@ describe('Spotlight background bridge seams', () => {
         expect(storedId).toBe(peerId);
         const refreshed = await callInternal({ action: 'arcifyBridgeStatus' }, optionsSender);
         expect(refreshed).toMatchObject({ success: true, status: { configured: true, peerId, status: 'connected' } });
-        expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: peerId });
+        expect(chromeMock.storage.local.set).toHaveBeenCalledExactlyOnceWith({ arcifyBridgePeerId: peerId, arcifyBridgePairingGeneration: expect.any(String) });
     });
 });
 

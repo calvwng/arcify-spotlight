@@ -1,5 +1,6 @@
+import { createFavoriteWitness } from './favorite-witness.js';
 /** Versioned, explicitly paired cross-extension transport. No workspace data is persisted. */
-import { BRIDGE_TYPE, BRIDGE_VERSION, PEER_KEY, trustedSender, sendBridgeRequest, isFavoriteUrl } from './arcify-bridge-protocol.js';
+import { BRIDGE_TYPE, BRIDGE_VERSION, GLOBAL_FAVORITES_FEATURE, PAIRING_GENERATION_KEY, PEER_KEY, trustedSender, sendBridgeRequest, isFavoriteUrl } from './arcify-bridge-protocol.js';
 export { BRIDGE_TYPE, BRIDGE_VERSION };
 export const PEER_STORAGE_KEY = PEER_KEY;
 export const EXTENSION_ID = /^[a-p]{32}$/;
@@ -17,7 +18,7 @@ const fail = (code, message) => { throw new ArcifyBridgeError(code, message); };
 const positiveInt = value => Number.isSafeInteger(value) && value > 0;
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 4096;
 
-export function validateSnapshot(snapshot, windowId) {
+export function validateSnapshot(snapshot, windowId, { allowOrdinaryFavorites = false } = {}) {
     if (!snapshot || snapshot.windowId !== windowId || !positiveInt(windowId) ||
         !Array.isArray(snapshot.spaces) || !Array.isArray(snapshot.tabs) ||
         !Array.isArray(snapshot.bookmarks) || !Number.isFinite(snapshot.capturedAt)) {
@@ -101,7 +102,7 @@ export function validateSnapshot(snapshot, windowId) {
                 !(favorite.sourceBookmarkId === null || id(favorite.sourceBookmarkId)) ||
                 (favorite.sourceBookmarkId !== null && sources.has(favorite.sourceBookmarkId)) ||
                 (favorite.tabId !== null && (!positiveInt(favorite.tabId) || bindings.has(favorite.tabId) ||
-                    !tabById.get(favorite.tabId)?.pinned || tabById.get(favorite.tabId)?.spaceId !== null))) {
+                    !tabById.has(favorite.tabId) || !allowOrdinaryFavorites && !tabById.get(favorite.tabId).pinned || tabById.get(favorite.tabId)?.spaceId !== null))) {
                 fail('INVALID_RESPONSE', 'Arcify returned invalid saved Favorite identity or binding.');
             }
             ids.add(favorite.id);
@@ -117,6 +118,7 @@ export class ArcifyBridgeClient {
         this.api = api;
         this.timeoutMs = timeoutMs;
         this.actionQueue = Promise.resolve();
+        this.favoriteWitness = createFavoriteWitness(api);
     }
 
     async getPeerId() {
@@ -133,7 +135,7 @@ export class ArcifyBridgeClient {
         if (peerId !== '' && (typeof peerId !== 'string' || !EXTENSION_ID.test(peerId) || peerId === this.api.runtime.id)) {
             fail('INVALID_PEER', 'Enter the 32-letter Arcify extension ID, different from Spotlight’s ID.');
         }
-        await this.api.storage.local.set({ [PEER_STORAGE_KEY]: peerId });
+        await this.favoriteWitness.configure(peerId);
     }
 
     async acceptsSender(sender) {
@@ -146,40 +148,49 @@ export class ArcifyBridgeClient {
         if (expectedPeerId && peerId !== expectedPeerId) fail('DISCONNECTED', 'Arcify pairing changed before the request. Search again.');
         if (!peerId) return null;
         if (!positiveInt(windowId)) fail('INVALID_WINDOW', 'A browser window is required for the Arcify connection.');
-        const response = await sendBridgeRequest(peerId, command, { ...payload, windowId },
-            { role: 'arcify', timeout: this.timeoutMs });
-        if (command === 'hello' && response.extensionId !== peerId) fail('INVALID_RESPONSE', 'The Arcify handshake did not match the paired extension ID.');
-        if (await this.getPeerId() !== peerId) fail('DISCONNECTED', 'Arcify pairing changed while the request was in progress. Search again.');
-        validateSnapshot(response.snapshot, windowId);
+        const generation = (await this.api.storage.local.get(PAIRING_GENERATION_KEY))[PAIRING_GENERATION_KEY];
+        const checkPairing = async () => {
+            if (await this.getPeerId() !== peerId || (await this.api.storage.local.get(PAIRING_GENERATION_KEY))[PAIRING_GENERATION_KEY] !== generation)
+                fail('DISCONNECTED', 'Arcify pairing changed while the request was in progress. Search again.');
+        };
+        // Negotiate on each operation. Only the read-only hello may fall back
+        // once, on old peers' exact unknown-field error. Never replay mutations.
+        let hello;
+        try {
+            hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE] },
+                { role: 'arcify', timeout: this.timeoutMs });
+        } catch (error) {
+            if (error.code !== 'INVALID_REQUEST') throw error;
+            await checkPairing();
+            hello = await sendBridgeRequest(peerId, 'hello', { windowId }, { role: 'arcify', timeout: this.timeoutMs });
+        }
+        await checkPairing();
+        if (hello.extensionId !== peerId) fail('INVALID_RESPONSE', 'The Arcify handshake did not match the paired extension ID.');
+        if (hello.capabilities !== undefined && (!Array.isArray(hello.capabilities)
+            || hello.capabilities.some(value => typeof value !== 'string' || !value || value.length > 200)
+            || new Set(hello.capabilities).size !== hello.capabilities.length)) fail('INVALID_RESPONSE', 'Arcify returned invalid capabilities.');
+        const ordinary = hello.capabilities?.includes(GLOBAL_FAVORITES_FEATURE) === true;
+        validateSnapshot(hello.snapshot, windowId, { allowOrdinaryFavorites: ordinary });
+        if (hello.capabilities?.includes('persistentFavorites') && !Array.isArray(hello.snapshot.favorites))
+            fail('INVALID_RESPONSE', 'Arcify did not include its saved Favorites.');
+        if (command === 'hello' || command === 'snapshot') return hello;
+        const response = await sendBridgeRequest(peerId, command, { ...payload, windowId,
+            ...(ordinary ? { supportedFeatures: [GLOBAL_FAVORITES_FEATURE] } : {}) }, { role: 'arcify', timeout: this.timeoutMs });
+        await checkPairing();
+        validateSnapshot(response.snapshot, windowId, { allowOrdinaryFavorites: ordinary });
         if (command === 'openFavorite' && (!positiveInt(response.tabId) ||
             response.snapshot.favorites?.find(favorite => favorite.id === payload.favoriteId)?.tabId !== response.tabId)) {
             fail('INVALID_RESPONSE', 'Arcify did not identify the opened Favorite. Refresh before trying again.');
-        }
-        if (command === 'hello') {
-            if (response.capabilities !== undefined && (!Array.isArray(response.capabilities) ||
-                response.capabilities.some(value => typeof value !== 'string' || !value || value.length > 200) ||
-                new Set(response.capabilities).size !== response.capabilities.length)) {
-                fail('INVALID_RESPONSE', 'Arcify returned invalid capabilities.');
-            }
-            if (response.capabilities?.includes('persistentFavorites') && !Array.isArray(response.snapshot.favorites)) {
-                fail('INVALID_RESPONSE', 'Arcify did not include its saved Favorites.');
-            }
         }
         return response;
     }
 
     async snapshot(windowId, expectedPeerId = null) {
-        const peerId = expectedPeerId || await this.getPeerId();
-        const response = await this.request('snapshot', windowId, {}, peerId);
+        const response = await this.request('hello', windowId, {}, expectedPeerId);
         if (!response) return null;
-        if (response.snapshot.favorites === undefined) return response.snapshot;
-        // Optional v1 data is usable only with an authenticated capability check.
-        // Never retain readiness across requests, worker suspension or revocation.
-        const hello = await this.request('hello', windowId, {}, peerId);
-        if (!hello?.capabilities?.includes('persistentFavorites')) {
+        if (response.snapshot.favorites !== undefined && !response.capabilities?.includes('persistentFavorites'))
             fail('UNSUPPORTED', 'This Arcify build does not support saved Favorites. Update both extensions.');
-        }
-        return hello.snapshot;
+        return response.snapshot;
     }
 
     async status(windowId) {
@@ -190,7 +201,7 @@ export class ArcifyBridgeClient {
             const response = await this.request('hello', windowId, {}, peerId);
             const warnings = response.snapshot.warnings || [];
             const warningText = warnings.length ? ` Some pinned bookmarks are unavailable. ${warnings.map(warning => warning.message).join(' ')}` : '';
-            const capabilities = Array.isArray(response.capabilities) ? response.capabilities.filter(value => ['openSidebar', 'persistentFavorites'].includes(value)) : [];
+            const capabilities = Array.isArray(response.capabilities) ? response.capabilities.filter(value => ['openSidebar', 'persistentFavorites', GLOBAL_FAVORITES_FEATURE].includes(value)) : [];
             return { configured: true, peerId, status: 'connected', capabilities, warnings, message: 'Connected to Arcify. Workspace changes are managed by Arcify.' + warningText };
         } catch (error) {
             // Another options tab can change pairing while the check is in flight.

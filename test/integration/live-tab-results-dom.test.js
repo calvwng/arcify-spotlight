@@ -35,7 +35,7 @@ const rows = () => [...page.resultsContainer.querySelectorAll('[data-result-type
 const shownIds = () => page.selectionManager.results.filter(result => result.type === 'open-tab').map(result => result.metadata.tabId);
 const bridgeMutations = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === PEER && !['hello', 'snapshot'].includes(request.command));
 const invalidate = (extra = {}, sender = { id: PEER, origin: `chrome-extension://${PEER}` }) => dispatch(externalListeners, { type: 'arcify-bridge', version: 1, requestId: 'logical-change', command: 'invalidate', windowId: 2, ...extra }, sender);
-const readCount = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === PEER && request.command === 'snapshot').length;
+const readCount = () => chromeMock.runtime.sendMessage.mock.calls.filter(([target, request]) => target === PEER && request.command === 'hello').length;
 const actions = () => chromeMock.runtime.sendMessage.mock.calls.filter(([message]) => message?.action === 'spotlightHandleResult');
 async function open() {
     const { initializeSpotlight } = await import('../../newtab.js');
@@ -234,7 +234,7 @@ describe('paired logical Arcify changes in the real result DOM', () => {
     it('discards an older delayed snapshot when a logical invalidation has refreshed the same query', async () => {
         await open(); let release;
         snapshotHook = (request, response, callback) => {
-            if (request.command !== 'snapshot') return false;
+            if (request.command !== 'hello') return false;
             snapshotHook = null; release = () => callback(response); return true;
         };
         page.input.value = 'new'; page.input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -307,7 +307,7 @@ describe('paired logical Arcify changes in the real result DOM', () => {
     it('rejects a fresh result when its source moves while the snapshot is awaited', async () => {
         await open(); let release;
         snapshotHook = (request, response, callback) => {
-            if (request.command !== 'snapshot') return false;
+            if (request.command !== 'hello') return false;
             snapshotHook = null; release = () => callback(response); return true;
         };
         await invalidate(); await vi.waitFor(() => expect(release).toBeTypeOf('function'));
@@ -318,7 +318,7 @@ describe('paired logical Arcify changes in the real result DOM', () => {
     it('fails a refresh visibly when the companion disappears instead of falling back to native tabs', async () => {
         await open();
         snapshotHook = (request, response, callback) => {
-            if (request.command !== 'snapshot') return false;
+            if (request.command !== 'hello') return false;
             callback({ ...response, ok: false, error: { code: 'UNAVAILABLE', message: 'Companion unavailable' } }); return true;
         };
         await invalidate(); await vi.waitFor(() => expect(shownIds()).toEqual([]));

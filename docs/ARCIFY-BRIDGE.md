@@ -436,3 +436,39 @@ Unchanged upstream Spotlight built successfully but had 689 passing tests and se
 external autocomplete timeouts. A test-only autocomplete stub made the affected
 35 tests deterministic; production autocomplete is unchanged. The inherited
 checkout tracks some `node_modules` files: exclude install churn from bridge commits.
+
+
+## Ordinary global Favorites and reload witnessing
+
+`globalFavoritesV1` is an optional v1 capability. Spotlight starts each operation
+with a marker-bearing read-only hello. Only an exact old-peer `INVALID_REQUEST`
+permits one unmarked hello fallback. A negotiated hello supplies the fresh
+snapshot; mutations carry the feature marker only for capable peers and are never
+replayed. The Favorite wire object still has its original five keys. Native
+`tabs[].pinned` stays truthful, and same-window/exact-ID/unique/no-Space-owner
+checks remain strict. Old pinned-only peers continue to work.
+
+The independently authenticated `arcify-favorite-witness` v1 endpoint lets a
+surviving Spotlight session attest Arcify's opaque epoch and latest ownership
+revision. `storage.session.arcifyFavoriteWitness` contains only those tokens,
+paired ID and pairing generations. Spotlight stores no duplicate workspace or
+Favorite database, browsing snapshots or URLs for this feature. Its local pairing
+settings rotate a random generation in the same durable write as any peer change,
+including disconnect/reconnect. Conditional recovery commits require the exact
+original peer generation and previous receipt; reads never enroll a candidate.
+
+The advertised hello capability is `favoriteContinuityWitnessV1`. The witness
+endpoint uses strict message shapes, browser-authenticated paired sender/origin,
+correlated request IDs, explicit role/version and a 1.5-second bounded transport.
+It needs no new permissions. Clearing Spotlight's extension session destroys the
+witness. Arcify may reenroll only from its own still-valid session. Full browser
+restart, loss of both extension sessions before reenrollment, old/missing peers,
+or revoked/stale evidence do not recover live identity. Unsupported unobserved
+old-build downgrade/re-upgrade interludes cannot be proved safe and are explicitly
+unsupported. No URL/title/order matching is used.
+
+Paired mocked verification from the Arcify checkout:
+`node scripts/check-favorite-witness-pair.mjs <spotlight-checkout>`. This exercises
+the real adapter, receiver and transport code with mocked Chrome APIs; it is not
+browser/native-keyboard evidence. Arcify's `docs/favorite-continuity.md` documents
+the complete commit ordering, provisional recovery receipts and lifecycle limits.

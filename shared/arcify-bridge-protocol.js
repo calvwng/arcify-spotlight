@@ -2,6 +2,8 @@
 export const BRIDGE_TYPE = 'arcify-bridge';
 export const BRIDGE_VERSION = 1;
 export const PEER_KEY = 'arcifyBridgePeerId';
+export const PAIRING_GENERATION_KEY = 'arcifyBridgePairingGeneration';
+export const GLOBAL_FAVORITES_FEATURE = 'globalFavoritesV1';
 export const isExtensionId = value => typeof value === 'string' && /^[a-p]{32}$/.test(value);
 export const isWindowId = value => Number.isSafeInteger(value) && value > 0;
 const isId = value => typeof value === 'string' && value.length > 0 && value.length <= 200;
@@ -36,8 +38,11 @@ export function validateRequest(message, commands) {
     if (typeof message.requestId !== 'string' || !/^[\w.:-]{1,80}$/.test(message.requestId)
         || !isWindowId(message.windowId) || !commands.includes(message.command))
         throw bridgeError('INVALID_REQUEST', 'Invalid request ID, window, or command.');
-    const fields = ['type', 'version', 'requestId', 'windowId', 'command', ...commandFields[message.command]];
+    const fields = ['type', 'version', 'requestId', 'windowId', 'command', 'supportedFeatures', ...commandFields[message.command]];
     if (Object.keys(message).some(key => !fields.includes(key))) throw bridgeError('INVALID_REQUEST', 'Unexpected request field.');
+    if (message.supportedFeatures !== undefined && (!Array.isArray(message.supportedFeatures)
+        || message.supportedFeatures.length !== 1 || message.supportedFeatures[0] !== GLOBAL_FAVORITES_FEATURE))
+        throw bridgeError('INVALID_REQUEST', 'Invalid supported feature marker.');
     if (['activateSpace', 'openBookmark'].includes(message.command) && !isId(message.spaceId)
         || message.command === 'openTab' && message.spaceId !== undefined && !isId(message.spaceId)
         || ['activateTab', 'navigateTab', 'startupSuggestion'].includes(message.command) && !isTabId(message.tabId)

@@ -85,16 +85,16 @@ describe('optional persistent Favorite snapshot contract', () => {
     });
     it('authenticates a fresh optional capability without persisting a snapshot', async () => {
         expect((await client.snapshot(11)).favorites).toEqual(state.favorites);
-        expect(commands()).toEqual(['snapshot', 'hello']);
+        expect(commands()).toEqual(['hello']);
         expect(api.storage.local.set).not.toHaveBeenCalled();
         api.runtime.sendMessage.mockClear();
         await new ArcifyBridgeClient(api).snapshot(11);
-        expect(commands()).toEqual(['snapshot', 'hello']);
+        expect(commands()).toEqual(['hello']);
     });
     it('keeps old peers without favorites on their existing single-read path', async () => {
         delete state.favorites; capabilities = ['openSidebar'];
         expect((await client.snapshot(11)).favorites).toBeUndefined();
-        expect(commands()).toEqual(['snapshot']);
+        expect(commands()).toEqual(['hello']);
     });
     it('rejects unsupported saved data rather than creating misleading results', async () => {
         capabilities = ['openSidebar'];
@@ -121,7 +121,7 @@ describe('optional persistent Favorite snapshot contract', () => {
 describe('saved Favorite routing never falls back to a URL', () => {
     it.each(['current-tab', 'new-tab'])('uses exact Favorite identity in %s mode after a fresh read', async mode => {
         expect(await handleBridgeResult(client, api, result(), mode, { windowId: 11, tabId: 22 })).toMatchObject({ command: 'openFavorite', tabId: 21 });
-        expect(commands()).toEqual(['snapshot', 'hello', 'openFavorite']);
+        expect(commands()).toEqual(['hello', 'hello', 'openFavorite']);
         expect(api.runtime.sendMessage.mock.calls.at(-1)[1]).toMatchObject({ command: 'openFavorite', favoriteId: 'favorite-1', windowId: 11 });
         expect(api.runtime.sendMessage.mock.calls.at(-1)[1]).not.toHaveProperty('url');
         expect(api.tabs.create).not.toHaveBeenCalled(); expect(api.tabs.update).not.toHaveBeenCalled();
@@ -130,12 +130,12 @@ describe('saved Favorite routing never falls back to a URL', () => {
         state.favorites[0].tabId = null; state.favorites[0].url = 'https://example.test/new-saved-url';
         const stale = result(); stale.url = 'javascript:alert(1)';
         await action(stale);
-        expect(commands()).toEqual(['snapshot', 'hello', 'openFavorite']);
+        expect(commands()).toEqual(['hello', 'hello', 'openFavorite']);
     });
     it('rejects removed records with the same URL still present', async () => {
         state.favorites.shift();
         await expect(action(result())).rejects.toMatchObject({ code: 'STALE_RESULT' });
-        expect(commands()).toEqual(['snapshot', 'hello']);
+        expect(commands()).toEqual(['hello']);
     });
     it.each(['unsupported', 'unpaired', 'replacement', 'malformed', 'wrong-window', 'missing-owner', 'wrong-type', 'bad-id'])('fails closed for %s', async reason => {
         const selected = result();
@@ -148,7 +148,7 @@ describe('saved Favorite routing never falls back to a URL', () => {
         if (reason === 'wrong-type') selected.type = 'bookmark';
         if (reason === 'bad-id') selected.metadata.arcifyBridge.favoriteId = 21;
         await expect(action(selected)).rejects.toThrow();
-        expect(commands().filter(command => !['snapshot', 'hello'].includes(command))).toEqual([]);
+        expect(commands().filter(command => !['hello'].includes(command))).toEqual([]);
         expect(api.tabs.create).not.toHaveBeenCalled(); expect(api.tabs.update).not.toHaveBeenCalled();
     });
     it('rejects a source tab that moved windows while the capability snapshot was awaited', async () => {
@@ -162,7 +162,7 @@ describe('saved Favorite routing never falls back to a URL', () => {
             if (request.command !== 'openFavorite') original(peer, request, callback);
         });
         await expect(action(result())).rejects.toMatchObject({ code: 'TIMEOUT' });
-        expect(commands()).toEqual(['snapshot', 'hello', 'openFavorite']);
+        expect(commands()).toEqual(['hello', 'hello', 'openFavorite']);
         expect(api.tabs.create).not.toHaveBeenCalled(); expect(api.tabs.update).not.toHaveBeenCalled();
     });
     it.each([undefined, 23, -1, '21'])('rejects an incorrect opened tab identity %j without retrying', async tabId => {
@@ -170,7 +170,7 @@ describe('saved Favorite routing never falls back to a URL', () => {
         api.runtime.sendMessage.mockImplementation((peer, request, callback) => original(peer, request, response =>
             callback(request.command === 'openFavorite' ? { ...response, tabId } : response)));
         await expect(action(result())).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-        expect(commands()).toEqual(['snapshot', 'hello', 'openFavorite']);
+        expect(commands()).toEqual(['hello', 'hello', 'openFavorite']);
         expect(api.tabs.create).not.toHaveBeenCalled(); expect(api.tabs.update).not.toHaveBeenCalled();
     });
     it('rechecks capability for every action instead of trusting prior readiness', async () => {

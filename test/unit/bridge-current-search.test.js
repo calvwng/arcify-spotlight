@@ -28,8 +28,8 @@ beforeEach(() => {
                 expect(peer).toBe(PEER);
                 expect(request.version).toBe(BRIDGE_VERSION);
                 state.commands.push(request.command);
-                const response = () => callback(responseFor(request, 'arcify', { ok: true, snapshot: snapshot(), ...(request.command === 'openTab' ? { tabId: 30 } : {}) }));
-                if (request.command === 'snapshot') {
+                const response = () => callback(responseFor(request, 'arcify', { ok: true, extensionId: PEER, snapshot: snapshot(), ...(request.command === 'openTab' ? { tabId: 30 } : {}) }));
+                if (request.command === 'hello') {
                     if (state.delay) state.response = response;
                     else response();
                 } else if (request.command === 'navigateTab') {
@@ -52,7 +52,7 @@ for (const type of ['search-query', 'autocomplete-suggestion']) {
     it(`${type} performs one final current-tab search without preliminary navigation`, async () => {
         const response = await action(type);
         expect(response).toMatchObject({ command: 'search', tabId: 20 });
-        expect(state.commands).toEqual(['snapshot']);
+        expect(state.commands).toEqual(['hello']);
         expect(state.url).toBe(ORIGINAL_URL);
         expect(api.tabs.get).toHaveBeenCalledExactlyOnceWith(20);
         expect(api.search.query).toHaveBeenCalledExactlyOnceWith({ text: 'weather tomorrow', tabId: 20 });
@@ -67,7 +67,7 @@ it('snapshot timeout and its late reply leave the original page intact and never
     await vi.advanceTimersByTimeAsync(11);
     expect(await outcome).toMatchObject({ code: 'TIMEOUT' });
     expect(state.url).toBe(ORIGINAL_URL);
-    expect(state.commands).toEqual(['snapshot']);
+    expect(state.commands).toEqual(['hello']);
     expect(api.tabs.get).not.toHaveBeenCalled();
     expect(api.search.query).not.toHaveBeenCalled();
     state.response();
@@ -117,13 +117,13 @@ it('Chrome search rejection does not leave a blank intermediate page or retry', 
     api.search.query.mockRejectedValue(new Error('Search unavailable'));
     await expect(action()).rejects.toThrow('Search unavailable');
     expect(state.url).toBe(ORIGINAL_URL);
-    expect(state.commands).toEqual(['snapshot']);
+    expect(state.commands).toEqual(['hello']);
     expect(api.search.query).toHaveBeenCalledTimes(1);
 });
 
 it('new-tab search still creates its owned target through Arcify before search', async () => {
     expect(await action('search-query', 'new-tab')).toMatchObject({ command: 'search', tabId: 30 });
-    expect(state.commands).toEqual(['snapshot', 'openTab']);
+    expect(state.commands).toEqual(['hello', 'hello', 'openTab']);
     expect(api.search.query).toHaveBeenCalledExactlyOnceWith({ text: 'weather tomorrow', tabId: 30 });
     expect(api.tabs.get).not.toHaveBeenCalled();
     expect(state.url).toBe(ORIGINAL_URL);

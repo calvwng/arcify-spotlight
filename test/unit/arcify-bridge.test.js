@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArcifyBridgeClient, PEER_STORAGE_KEY, validateSnapshot } from '../../shared/arcify-bridge.js';
 import {
-    BRIDGE_TYPE, BRIDGE_VERSION, responseFor, sendBridgeRequest, trustedSender, validateRequest
+    BRIDGE_TYPE, BRIDGE_VERSION, PAIRING_GENERATION_KEY, responseFor, sendBridgeRequest, trustedSender, validateRequest
 } from '../../shared/arcify-bridge-protocol.js';
 
 const OWN_ID = 'a'.repeat(32);
@@ -27,7 +27,7 @@ function fakeApi(peerId = PEER_ID) {
                 callback(responseFor(request, 'arcify', { ok: true, extensionId: peer, snapshot: snapshot(request.windowId) }));
             })
         },
-        storage: { local: {
+        storage: { session: { set: vi.fn(async () => {}) }, local: {
             get: vi.fn(async key => ({ [key]: local[key] })),
             set: vi.fn(async values => { Object.assign(local, values); })
         } }
@@ -74,11 +74,11 @@ describe('Arcify bridge pairing and transport', () => {
         expect(api.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
-    it('stores only the explicitly configured peer key, including disconnect', async () => {
+    it('stores explicit pairing and a fresh revocation generation, including disconnect', async () => {
         await client.configure(PEER_ID);
         await client.configure('');
         expect(api.storage.local.set.mock.calls).toEqual([
-            [{ [PEER_STORAGE_KEY]: PEER_ID }], [{ [PEER_STORAGE_KEY]: '' }]
+            [{ [PEER_STORAGE_KEY]: PEER_ID, [PAIRING_GENERATION_KEY]: expect.any(String) }], [{ [PEER_STORAGE_KEY]: '', [PAIRING_GENERATION_KEY]: expect.any(String) }]
         ]);
         expect(await client.getPeerId()).toBeNull();
     });
@@ -86,7 +86,7 @@ describe('Arcify bridge pairing and transport', () => {
     it('requests a versioned snapshot for the exact window and never stores workspace data', async () => {
         expect(await client.snapshot(WINDOW_ID)).toMatchObject({ windowId: WINDOW_ID, activeSpaceId: 'work' });
         expect(api.runtime.sendMessage).toHaveBeenCalledWith(PEER_ID, expect.objectContaining({
-            type: BRIDGE_TYPE, version: BRIDGE_VERSION, command: 'snapshot', windowId: WINDOW_ID,
+            type: BRIDGE_TYPE, version: BRIDGE_VERSION, command: 'hello', windowId: WINDOW_ID,
             requestId: expect.any(String)
         }), expect.any(Function));
         expect(api.storage.local.get).toHaveBeenCalledWith(PEER_STORAGE_KEY);
@@ -170,7 +170,7 @@ describe('Arcify bridge pairing and transport', () => {
         });
         expect(api.local[PEER_STORAGE_KEY]).toBe(PEER_ID);
         expect(await client.status(WINDOW_ID)).toMatchObject({ configured: true, peerId: PEER_ID, status: 'connected' });
-        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: PEER_ID });
+        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: PEER_ID, [PAIRING_GENERATION_KEY]: expect.any(String) });
         expect(api.runtime.sendMessage.mock.calls.map(([, request]) => request.command)).toEqual(['hello', 'hello']);
     });
 
@@ -226,7 +226,7 @@ describe('Arcify bridge pairing and transport', () => {
             message: expect.stringContaining(replacementId ? 'pairing changed' : 'connection is off')
         });
         expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
-        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: replacementId });
+        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: replacementId, [PAIRING_GENERATION_KEY]: expect.any(String) });
     });
 
     it('times out once without replaying a mutation and ignores its late callback', async () => {
@@ -274,7 +274,7 @@ describe('Arcify bridge pairing and transport', () => {
 
         await expect(action).rejects.toMatchObject({ code: 'DISCONNECTED' });
         expect(api.runtime.sendMessage).toHaveBeenCalledTimes(1);
-        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: replacementId });
+        expect(api.storage.local.set).toHaveBeenCalledExactlyOnceWith({ [PEER_STORAGE_KEY]: replacementId, [PAIRING_GENERATION_KEY]: expect.any(String) });
     });
 
     it('serializes actions and allows the next explicit action after a failure', async () => {

@@ -1,3 +1,5 @@
+import { installFavoriteWitness } from './shared/favorite-witness.js';
+import { WITNESS_CAPABILITY } from './shared/favorite-witness-protocol.js';
 /**
  * Spotlight Background Service Worker (Manifest V3)
  *
@@ -19,6 +21,8 @@ import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
 import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, createArcifyResultUpdates, installLiveTabResultUpdates } from './shared/live-tab-results.js';
 import { createActiveNewTabReuse, isBrowserNewTabAlias, isSameActiveTab } from './shared/active-newtab-reuse.js';
+
+installFavoriteWitness(chrome, arcifyBridge.favoriteWitness);
 
 const activeNewTabReuse = createActiveNewTabReuse(chrome);
 
@@ -217,7 +221,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
             const startupResult = message.command === 'startupSuggestion'
                 ? await offerStartupSidebarSuggestion(chrome, arcifyBridge, message, peerId) : undefined;
             sendResponse(responseFor(message, 'spotlight', { ok: true, extensionId: chrome.runtime.id,
-                ...(message.command === 'hello' ? { capabilities: ['startupSuggestion'] } : {}),
+                ...(message.command === 'hello' ? { capabilities: ['startupSuggestion', WITNESS_CAPABILITY] } : {}),
                 ...(startupResult || {}) }));
         } catch (error) {
             sendResponse(responseFor(message, 'spotlight', { ok: false, error: { code: error.code || 'FAILED', message: error.message } }));
