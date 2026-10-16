@@ -477,3 +477,6 @@ the complete commit ordering, provisional recovery receipts and lifecycle limits
 
 See [Space actions](SPACE-ACTIONS.md) for the initial settings/folder/Pin/Remove
 slice, exact-identity protocol contract, confirmation behavior, and test limits.
+
+See [Archive actions](ARCHIVE-ACTIONS.md) for optional native Archive opening and
+exact archived-entry reopening, one-shot identity, partial warnings, and test limits.

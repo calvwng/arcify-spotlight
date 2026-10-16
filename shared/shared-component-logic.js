@@ -14,11 +14,12 @@
 
 import { SpotlightUtils } from './ui-utilities.js';
 import { ResultType } from './search-types.js';
+import { isArchiveResult } from './arcify-archive-actions-protocol.js';
 import { isTabActionResult } from './arcify-tab-actions-protocol.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 import { resultIdentity } from './selection-manager.js';
 
-export const isActionResult = result => isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
@@ -83,6 +84,9 @@ export class SharedSpotlightLogic {
             const favoriteIdentity = result.type === ResultType.SAVED_FAVORITE && result.metadata?.arcifyBridge?.kind === 'favorite'
                 ? ` data-favorite-id="${SpotlightUtils.escapeHtml(result.metadata.arcifyBridge.favoriteId)}"` : '';
 
+            const archiveIdentity = isArchiveResult(result)
+                ? ` data-archive-command="${SpotlightUtils.escapeHtml(result.metadata.archiveAction.command)}"${result.metadata.archiveAction.entryId === null ? '' : ` data-archive-entry-id="${SpotlightUtils.escapeHtml(result.metadata.archiveAction.entryId)}"`}` : '';
+
             // If chip exists, wrap URL text in span for flex layout; otherwise keep as text node
             const urlContent = formatted.subtitle
                 ? (chipHtml
@@ -93,7 +97,7 @@ export class SharedSpotlightLogic {
             return `
                 <button class="arcify-spotlight-result-item ${isSelected ? 'selected' : ''}"
                         data-index="${index}"
-                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"${favoriteIdentity}
+                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"${favoriteIdentity}${archiveIdentity}
                         data-testid="spotlight-result">
                     <img class="arcify-spotlight-result-favicon"
                          src="${SpotlightUtils.getFaviconUrl(result)}"

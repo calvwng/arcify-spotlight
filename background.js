@@ -15,6 +15,7 @@ import { getSettings } from './utils.js';
 import { arcifyProvider } from './shared/data-providers/arcify-provider.js';
 import { BookmarkUtils } from './bookmark-utils.js';
 import { arcifyBridge } from './shared/arcify-bridge.js';
+import { installArcifyArchiveMessages } from './shared/arcify-archive-actions.js';
 import { installArcifyTabActionMessages } from './shared/arcify-tab-actions.js';
 import { installArcifySpaceActionMessages } from './shared/arcify-space-actions.js';
 import { BRIDGE_TYPE, isExtensionId, isWindowId, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
@@ -32,6 +33,9 @@ installArcifySpaceActionMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
 });
 installArcifyTabActionMessages(chrome, arcifyBridge, {
+    verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
+});
+installArcifyArchiveMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
 });
 

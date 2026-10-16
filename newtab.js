@@ -16,6 +16,7 @@ import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 import { shouldCloseNewTab } from './shared/bridge-navigation-ui.js';
 import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
 import { TabActionController, isTabActionResult } from './shared/arcify-tab-actions-ui.js';
+import { ArchiveActionController, isArchiveResult } from './shared/arcify-archive-actions-ui.js';
 import { SpaceActionController, isSpaceActionResult } from './shared/arcify-space-actions-ui.js';
 import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
 import { mountStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
@@ -301,6 +302,7 @@ export async function initializeSpotlight() {
     let sidebarCommand;
     let spaceActions;
     let tabActions;
+    let archiveActions;
 
     // Initialize spotlight state
     let currentResults = [];
@@ -326,7 +328,7 @@ export async function initializeSpotlight() {
         selectionInvalidated = false;
         manuallySelected = true;
         startupSuggestion?.cancel();
-        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result)) return;
+        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -351,6 +353,7 @@ export async function initializeSpotlight() {
         clearSelection: () => { manuallySelected = false; selectionManager.selectedIndex = -1; selectionManager.updateVisualSelection(); } });
     spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     const liveResults = mountLiveTabResults({
         isActive: () => !disposed,
         onInvalidate: removedTabIds => {
@@ -359,7 +362,7 @@ export async function initializeSpotlight() {
             asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
             updateDisplay();
         },
-        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
+        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); archiveActions.ready = archiveActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
     });
     const activeNewTabReuse = mountActiveNewTabReuse({ isReady: () => !disposed && container.isConnected });
     const dispose = () => {
@@ -370,6 +373,7 @@ export async function initializeSpotlight() {
         sidebarCommand.dispose();
         spaceActions.dispose();
         tabActions.dispose();
+        archiveActions.dispose();
         liveResults.dispose();
         activeNewTabReuse.dispose();
         bridgeStatus.dispose();
@@ -462,7 +466,7 @@ export async function initializeSpotlight() {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || [])], query: typedQuery,
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || [])], query: typedQuery,
             preferredAction: startupSuggestion?.selected ? command : null
         });
     }
@@ -472,10 +476,10 @@ export async function initializeSpotlight() {
         if (disposed) return;
         const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous)) selectionInvalidated = true;
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
-        if (!manuallySelected && !typedQuery && !startupSuggestion?.selected && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        if (!manuallySelected && !typedQuery && !startupSuggestion?.selected && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]))) selectionManager.selectedIndex = -1;
         // A failed/revoked command or removed tab must not expose another action to
         // held Enter or a later async refresh. Fresh input/navigation can select again.
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
@@ -522,10 +526,11 @@ export async function initializeSpotlight() {
 
     // Handle result selection
     async function handleResultAction(result, event) {
-        if (spaceActions.pending || tabActions.pending) return;
+        if (spaceActions.pending || tabActions.pending || archiveActions.pending) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;
+        if (archiveActions.invoke(result, event)) return;
         startupSuggestion.cancel();
         if (!result) {
             Logger.error('[NewTab Spotlight] No result provided');
@@ -565,7 +570,7 @@ export async function initializeSpotlight() {
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
         (result, index, event) => {
-            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result)) && event?.isTrusted !== true) return;
+            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result)) && event?.isTrusted !== true) return;
             selectionInvalidated = false;
             manuallySelected = true;
             selectionManager.selectedIndex = index;
@@ -605,5 +610,5 @@ export async function initializeSpotlight() {
         // Load initial results
         if (!disposed && !input.value.trim()) loadInitialResults();
     })();
-    return { dispose, sidebarCommand, spaceActions, tabActions, startupSuggestion, selectionManager, input, resultsContainer };
+    return { dispose, sidebarCommand, spaceActions, tabActions, archiveActions, startupSuggestion, selectionManager, input, resultsContainer };
 }
