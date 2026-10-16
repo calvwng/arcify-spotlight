@@ -8,7 +8,7 @@
  * Critical Notes:
  * - Injected by background script with automatic popup fallback for restricted URLs
  * - Bundled as single file via Vite for content script compatibility (no ES6 imports)
- * - Only injected on-demand for privacy - no persistent content script presence
+ * - Dormant receiver is installed at document_start; command recovery reinjects it on demand
  * - Uses modal dialog with backdrop blur for non-intrusive overlay experience
  * - Handles URL prefill, tab ID injection, and optimized navigation for current-tab mode
  */
@@ -19,6 +19,16 @@ import { SpotlightMessageClient } from './shared/message-client.js';
 import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
+import { mountBridgeStatus } from './shared/bridge-status-ui.js';
+import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
+import { TabActionController, isTabActionResult } from './shared/arcify-tab-actions-ui.js';
+import { ArchiveActionController, isArchiveResult } from './shared/arcify-archive-actions-ui.js';
+import { SplitActionController, isSplitActionResult } from './shared/arcify-split-actions-ui.js';
+import { SpaceActionController, isSpaceActionResult } from './shared/arcify-space-actions-ui.js';
+import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
+import { createOverlaySurface, containOverlayFocus, isComposingKey } from './shared/overlay-surface.js';
+import { installOverlayReceiver, markOverlayHost } from './shared/overlay-receiver.js';
+import { boundedOverlayDelivery } from './shared/overlay-recovery.js';
 
 /**
  * DORMANT CONTENT SCRIPT ARCHITECTURE
@@ -36,123 +46,62 @@ import { Logger } from './logger.js';
  * - Graceful fallback to legacy injection for compatibility
  */
 
-// Dormant mode: Listen for activation message when loaded as content script
-// Only set up listener if NOT already activated by legacy injection method
-if (!window.arcifySpotlightTabMode) {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.action === 'activateSpotlight') {
-            // Set up activation variables exactly like legacy background script injection
-            // These variables are used throughout the spotlight code for context
-            window.arcifySpotlightTabMode = message.mode;
-            window.arcifyCurrentTabUrl = message.tabUrl;
-            window.arcifyCurrentTabId = message.tabId;
+// Both manifest loading and command recovery install the same dormant singleton.
+// Legacy mode globals are data only; reinjection never opens a dialog by itself.
+// The modal shell uses Shadow DOM for CSS isolation; its input document uses a
+// frame for keyboard isolation. See shared/overlay-surface.js for event ordering.
+let activeOverlay = null;
+let activationQueue = Promise.resolve();
+let overlayReceiver;
 
-            // Instantly activate spotlight (no injection delay!)
-            activateSpotlight(message.mode);
-            sendResponse({ success: true });
+function activateSpotlight(spotlightTabMode = 'current-tab', options = {}) {
+    const activation = activationQueue.catch(() => {}).then(() => activateSpotlightNow(spotlightTabMode, options));
+    activationQueue = activation;
+    return activation;
+}
+
+// Main spotlight activation function. Bridge launches ensure visibility; shortcuts toggle.
+async function activateSpotlightNow(spotlightTabMode, options) {
+    if (options.expectedUrl !== undefined && options.expectedUrl !== window.location.href)
+        throw Object.assign(new Error('The source document changed.'), { changed: true });
+    if (activeOverlay && !activeOverlay.host.isConnected) activeOverlay.dispose();
+    const stale = activeOverlay ? null : overlayReceiver.prepareRecovery(options);
+    window.arcifySpotlightTabMode = spotlightTabMode;
+    if ('tabUrl' in options) window.arcifyCurrentTabUrl = options.tabUrl;
+    if ('tabId' in options) window.arcifyCurrentTabId = options.tabId;
+
+    if (activeOverlay) {
+        if (options.recovery) await overlayReceiver.validateRecovery(options);
+        if (activeOverlay.dialog.open && !options.ensureOpen) {
+            activeOverlay.close();
+            return { open: false };
         }
-    });
-}
-
-/**
- * SHADOW DOM ISOLATION
- *
- * The overlay used to be appended straight to document.body with its <style> in
- * document.head, which left it fully exposed to the host page's cascade: element-type
- * selectors (the result rows are <button>), site rules that out-specify our bare class
- * selectors, and inherited properties (font, color) flowing in from html/body. Sites with
- * an opinionated design system -- Reddit, StackOverflow -- rendered a visibly different bar.
- *
- * Everything now lives in a shadow root, so page selectors cannot match our nodes at all,
- * and ':host { all: initial }' cuts off inheritance at the boundary.
- *
- * Consequence: document.getElementById() cannot see into the shadow tree. Every lookup of
- * our own DOM must go through the host element.
- */
-const SPOTLIGHT_HOST_ID = 'arcify-spotlight-host';
-const SPOTLIGHT_DIALOG_ID = 'arcify-spotlight-dialog';
-
-function getExistingSpotlightDialog() {
-    const host = document.getElementById(SPOTLIGHT_HOST_ID);
-    return host && host.shadowRoot
-        ? host.shadowRoot.getElementById(SPOTLIGHT_DIALOG_ID)
-        : null;
-}
-
-// Main spotlight activation function
-async function activateSpotlight(spotlightTabMode = 'current-tab') {
-
-    // Handle toggle functionality for existing spotlight
-    // (must find the dialog through the host -- a miss here would build a second overlay)
-    const existingDialog = getExistingSpotlightDialog();
-    if (existingDialog) {
-        if (existingDialog.open) {
-            existingDialog.close();
-        } else {
-            existingDialog.showModal();
-
-            // Notify background that spotlight opened in this tab
+        if (activeOverlay.dialog.open && activeOverlay.mode === spotlightTabMode) {
+            activeOverlay.focus();
             SpotlightMessageClient.notifyOpened();
-
-            const input = existingDialog.querySelector('.arcify-spotlight-input');
-            if (input) {
-                input.focus();
-                input.select();
-                input.scrollLeft = 0;
-            }
+            return { open: true };
         }
-        return;
+        // A closed instance has already disposed its status/listeners. Replace it,
+        // canceling its removal timer, rather than reviving an incomplete dialog.
+        // Rebuild for mode changes too, so search and action closures use the new mode.
+        activeOverlay.dispose();
     }
-
-    // Mark as injected only when creating new dialog
-    window.arcifySpotlightInjected = true;
 
     // Start with default color - will update asynchronously
     let activeSpaceColor = 'purple'; // Default fallback
     let activeGroupName = null; // Active tab group name for Arcify context
 
     // CSS styles with default accent color (will be updated)
-    // ':host' -- not ':root' -- because these are injected into the shadow root, where
-    // ':root' matches nothing and every var() below would silently resolve to empty.
-    const accentColorDefinitions = await SpotlightUtils.getAccentColorCSS(activeSpaceColor, ':host');
+    // The UI owns a separate document; accent variables belong on its root.
+    const colors = SpotlightUtils.getAccentColorCSS(activeSpaceColor, ':root');
+    const accentColorDefinitions = await (options.recovery ? boundedOverlayDelivery(colors) : colors);
+    if (options.recovery) await overlayReceiver.validateRecovery(options);
+    // Read only after the awaited settings call; the stale dialog remains usable
+    // while waiting. No await occurs between this snapshot and modal replacement.
+    const recoveredDraft = stale?.readDraft();
     const spotlightCSS = `
-        /*
-            Cut inheritance off at the shadow boundary. Shadow DOM blocks page SELECTORS
-            from matching our nodes, but inherited properties (font-family, color,
-            letter-spacing, text-transform...) still cross the boundary via the host.
-
-            '!important' is required, not defensive: the host is an ordinary page node, and
-            for normal declarations the outer page's rules beat ':host'. That order reverses
-            for important declarations, so this is what actually wins.
-
-            'display: contents' keeps the host boxless, so layout matches the old
-            append-to-body behaviour exactly.
-        */
-        :host {
-            all: initial !important;
-            display: contents !important;
-        }
-
-        #arcify-spotlight-dialog {
-            margin: 0;
-            position: fixed;
-            /* Not fully centered but this looks better than 50vh */
-            top: calc(35vh);
-            left: 50%;
-            transform: translateX(-50%);
-            border: none;
-            padding: 0;
-            background: transparent;
-            border-radius: 12px;
-            width: 650px;
-            max-width: 90vw;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        }
-
-        #arcify-spotlight-dialog::backdrop {
-            background: transparent;
-        }
-
+        html, body { margin: 0; padding: 0; background: transparent; }
+        body { overflow-x: hidden; }
         .arcify-spotlight-container {
             background: #2D2D2D;
             border-radius: 12px;
@@ -164,14 +113,14 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             overflow: hidden;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input-wrapper {
+        #arcify-spotlight-content .arcify-spotlight-input-wrapper {
             display: flex;
             align-items: center;
             padding: 12px 24px 12px 20px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-search-icon {
+        #arcify-spotlight-content .arcify-spotlight-search-icon {
             width: 20px;
             height: 20px;
             margin-right: 12px;
@@ -179,11 +128,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             flex-shrink: 0;
         }
 
-        /* 
-            Specific CSS directives to override styling on specific pages (stackoverflow, chrome docs).
-            Otherwise the spotlight bar has a white background and some other weird UI.
-        */
-        #arcify-spotlight-dialog .arcify-spotlight-input {
+        #arcify-spotlight-content .arcify-spotlight-input {
             flex: 1 !important;
             background: transparent !important;
             background-color: transparent !important;
@@ -214,12 +159,12 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             box-sizing: border-box !important;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input::placeholder {
+        #arcify-spotlight-content .arcify-spotlight-input::placeholder {
             color: rgba(255, 255, 255, 0.5) !important;
             opacity: 1 !important;
         }
 
-        #arcify-spotlight-dialog .arcify-spotlight-input:focus {
+        #arcify-spotlight-content .arcify-spotlight-input:focus {
             outline: none !important;
             outline-style: none !important;
             outline-width: 0 !important;
@@ -357,64 +302,14 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             font-size: 14px;
         }
 
-        #arcify-spotlight-dialog {
-            animation: arcify-spotlight-show 0.2s ease-out;
-        }
-
-        @keyframes arcify-spotlight-show {
-            from {
-                opacity: 0;
-                transform: translateX(-50%) scale(0.95);
-            }
-            to {
-                opacity: 1;
-                transform: translateX(-50%) scale(1);
-            }
-        }
-
         @media (max-width: 640px) {
-            #arcify-spotlight-dialog {
-                width: 95vw;
-                margin: 20px auto;
-            }
-            
-            #arcify-spotlight-dialog .arcify-spotlight-input {
+            #arcify-spotlight-content .arcify-spotlight-input {
                 font-size: 16px !important;
             }
         }
     `;
 
-    // Create the shadow host. Styles and markup go inside the shadow root, never into
-    // document.head / document.body (see SHADOW DOM ISOLATION above).
-    const host = document.createElement('div');
-    host.id = SPOTLIGHT_HOST_ID;
-    // Same reset as ':host', applied inline as a second line of defence: an inline
-    // '!important' declaration is the strongest author-level rule, so page CSS matching
-    // the host (div {}, * {}) cannot feed inherited values into the shadow tree.
-    host.setAttribute('style', 'all: initial !important; display: contents !important;');
-
-    // Must stay 'open': the e2e suite reaches the overlay through host.shadowRoot.
-    const shadow = host.attachShadow({ mode: 'open' });
-
-    const styleSheet = document.createElement('style');
-    styleSheet.id = 'arcify-spotlight-styles';
-    styleSheet.textContent = spotlightCSS;
-    shadow.appendChild(styleSheet);
-
-    // Accent colors get their own <style> so the async color update can replace the whole
-    // element. The old code regex-patched the ':root {...}' block inside the main sheet;
-    // that regex would now match the ':host' reset rule instead and eat it.
-    const accentStyleSheet = document.createElement('style');
-    accentStyleSheet.id = 'arcify-spotlight-accent-styles';
-    accentStyleSheet.textContent = accentColorDefinitions;
-    shadow.appendChild(accentStyleSheet);
-
-    // Create spotlight dialog
-    const dialog = document.createElement('dialog');
-    dialog.id = SPOTLIGHT_DIALOG_ID;
-    dialog.setAttribute('data-testid', 'spotlight-overlay');
-
-    dialog.innerHTML = `
+    const surface = createOverlaySurface(spotlightCSS, accentColorDefinitions, `
         <div class="arcify-spotlight-container">
             <div class="arcify-spotlight-input-wrapper">
                 <svg class="arcify-spotlight-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -423,6 +318,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
                 </svg>
                 <input
                     type="text"
+                    aria-label="Search or enter URL"
                     class="arcify-spotlight-input"
                     data-testid="spotlight-input"
                     placeholder="${spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'Search or enter URL (opens in new tab)...' : 'Search or enter URL...'}"
@@ -436,40 +332,47 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
                 <div class="arcify-spotlight-loading" data-testid="spotlight-loading">Loading...</div>
             </div>
         </div>
-    `;
-
-    shadow.appendChild(dialog);
-    // showModal() later requires the dialog to be connected -- the host must be in the
-    // document before then, and appending it here keeps that ordering obvious.
-    document.body.appendChild(host);
-
-    // Get references to key elements
-    const input = dialog.querySelector('.arcify-spotlight-input');
-    const resultsContainer = dialog.querySelector('.arcify-spotlight-results');
+    `);
+    const { host, dialog, content, frameDocument, accentStyleSheet } = surface;
+    markOverlayHost(host, chrome.runtime.id);
+    const input = content.querySelector('.arcify-spotlight-input');
+    const resultsContainer = content.querySelector('.arcify-spotlight-results');
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
+    let actionPending = false;
+    let sidebarCommand;
+    let spaceActions;
+    let tabActions;
+    let archiveActions;
+    let splitActions;
+    let manuallySelected = false;
+    let selectionInvalidated = false;
+    let spotlightClosed = false;
+    let removalTimer = null;
+    let prefillTimer = null;
 
     // Initialize spotlight state
     let currentResults = [];
+    let typedQuery = ''; // Genuine input only; keyboard URL/title previews do not change the search.
     let instantSuggestion = null; // The real-time first suggestion
     let asyncSuggestions = []; // Debounced suggestions from background
     let searchQueryId = 0; // Query generation counter for stale response protection (PERF-03)
 
     // Send get suggestions message to background script using shared client
-    async function sendGetSuggestionsMessage(query, mode) {
-        return await SpotlightMessageClient.getSuggestions(query, mode);
+    async function sendGetSuggestionsMessage(query, mode, bridgeRefresh) {
+        return await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
     }
 
     // Handle result action via message passing using shared client (with tab ID optimization)
     async function handleResultActionViaMessage(result, mode) {
-        return await SpotlightMessageClient.handleResult(result, mode);
+        return await SpotlightMessageClient.handleResultDetailed(result, mode);
     }
 
 
-    // Flag to track selection-driven input changes (should not trigger search)
-    let isSelectionDrivenChange = false;
-
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
-        isSelectionDrivenChange = true;
+        selectionInvalidated = false;
+        manuallySelected = true;
+        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -480,22 +383,44 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         } else {
             input.value = '';
         }
-        // Flag will be checked and reset by the input handler
     };
 
-    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange);
+    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange, () => {
+        manuallySelected = true;
+        selectionInvalidated = false;
+    });
+    sidebarCommand = new SidebarCommandController({ showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    splitActions = new SplitActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    const liveResults = mountLiveTabResults({
+        isActive: () => !spotlightClosed,
+        onInvalidate: removedTabIds => {
+            searchQueryId++;
+            splitActions.invalidate();
+            if (isTabResultRemoved(selectionManager.getSelectedResult(), removedTabIds)) selectionInvalidated = true;
+            asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
+            updateDisplay();
+        },
+        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); archiveActions.ready = archiveActions.prepare(); splitActions.ready = splitActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
+    });
 
     // Load initial results
-    async function loadInitialResults() {
+    async function loadInitialResults(bridgeRefresh) {
+        if (spotlightClosed) return;
+        const queryId = ++searchQueryId;
         try {
             // Clear instant suggestion when loading initial results
             instantSuggestion = null;
 
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
-            const results = await sendGetSuggestionsMessage('', mode);
+            const results = await sendGetSuggestionsMessage('', mode, bridgeRefresh);
+            if (spotlightClosed || queryId !== searchQueryId || typedQuery) return;
             asyncSuggestions = results || [];
             updateDisplay();
         } catch (error) {
+            if (spotlightClosed || queryId !== searchQueryId || typedQuery) return;
             Logger.error('[Spotlight] Error loading initial results:', error);
             instantSuggestion = null;
             asyncSuggestions = [];
@@ -504,9 +429,13 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     }
 
     // Pre-fill URL in current-tab mode
-    if (spotlightTabMode === SpotlightTabMode.CURRENT_TAB && window.arcifyCurrentTabUrl) {
+    if (recoveredDraft) {
+        input.value = recoveredDraft.value;
+        typedQuery = input.value.trim();
+        prefillTimer = setTimeout(() => { handleInstantInput(); handleAsyncSearch(); }, 10);
+    } else if (spotlightTabMode === SpotlightTabMode.CURRENT_TAB && window.arcifyCurrentTabUrl) {
         input.value = window.arcifyCurrentTabUrl;
-        setTimeout(() => {
+        prefillTimer = setTimeout(() => {
             handleInstantInput();
             handleAsyncSearch();
         }, 10);
@@ -517,10 +446,16 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
 
     // Handle instant suggestion update (no debouncing)
     function handleInstantInput() {
-        const query = input.value.trim();
+        if (spotlightClosed) return;
+        searchQueryId++;
+        typedQuery = input.value.trim();
+        const query = typedQuery;
+        asyncSuggestions = []; // Never promote or activate stale matches for a new query.
 
         if (!query) {
             instantSuggestion = null;
+            asyncSuggestions = [];
+            updateDisplay();
             loadInitialResults();
             return;
         }
@@ -534,8 +469,9 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     // Phase 1: Local results render immediately (~10-50ms)
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
-    async function handleAsyncSearch() {
-        const query = input.value.trim();
+    async function handleAsyncSearch(bridgeRefresh) {
+        if (spotlightClosed) return;
+        const query = typedQuery;
         const queryId = ++searchQueryId;
 
         if (!query) {
@@ -548,7 +484,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
 
             // Phase 1: Local results (fast, ~10-50ms)
-            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, mode);
+            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, mode, bridgeRefresh);
             if (queryId !== searchQueryId) return; // Stale query -- discard
             asyncSuggestions = localResults || [];
             updateDisplay();
@@ -560,7 +496,7 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
             if (autocompleteResults && autocompleteResults.length > 0) {
                 // Merge autocomplete with local results using the original all-in-one path
                 // for proper deduplication, scoring, and sorting
-                const allResults = await SpotlightMessageClient.getSuggestions(query, mode);
+                const allResults = await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
                 if (queryId !== searchQueryId) return; // Stale query -- discard
                 asyncSuggestions = allResults || [];
                 updateDisplay();
@@ -577,55 +513,76 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
 
     // Combine instant and async suggestions with deduplication
     function combineResults() {
-        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions);
+        const command = sidebarCommand?.result(typedQuery);
+        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || [])], query: typedQuery
+        });
     }
 
     // Update the display with combined results
     function updateDisplay() {
+        if (spotlightClosed) return;
+        const previousResults = currentResults;
+        const previous = selectionManager.getSelectedResult();
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
-        selectionManager.updateResults(currentResults);
+        selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
+        if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        // A failed/revoked command or removed tab must not expose another action to
+        // held Enter or a later async refresh. Fresh input/navigation can select again.
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
-            displayEmptyState();
+            displayEmptyState(previousResults);
             return;
         }
 
         const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
-        SharedSpotlightLogic.updateResultsDisplay(resultsContainer, [], currentResults, mode, activeGroupName);
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, currentResults, mode, activeGroupName, input)) {
+            // Tab focus also expresses an exact choice. If it disappears, a later
+            // Enter on the fallback input must not silently invoke another result.
+            selectionInvalidated = true;
+            selectionManager.selectedIndex = -1;
+        }
+        selectionManager.updateVisualSelection();
     }
 
 
 
     // Display empty state
-    function displayEmptyState() {
-        resultsContainer.innerHTML = '<div class="arcify-spotlight-empty">Start typing to search tabs, bookmarks, and history</div>';
+    function displayEmptyState(previousResults = currentResults) {
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, [], spotlightTabMode, activeGroupName, input)) selectionInvalidated = true;
         currentResults = [];
         instantSuggestion = null;
         asyncSuggestions = [];
         selectionManager.updateResults([]);
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
     }
 
 
     // Create the base input handler once (with debouncing)
     const baseInputHandler = SharedSpotlightLogic.createInputHandler(
         handleInstantInput,    // instant update (zero latency)
-        handleAsyncSearch,     // async update (debounced by SearchEngine)
+        () => handleAsyncSearch(),     // async update (debounced by SearchEngine)
         150                    // debounce delay in ms
     );
 
-    // Input event handler - skip search for selection-driven changes
+    // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
-        if (isSelectionDrivenChange) {
-            // Reset flag and skip search - this was a selection preview update
-            isSelectionDrivenChange = false;
-            return;
-        }
-        // User typed something - trigger search
+        selectionInvalidated = false;
+        manuallySelected = false;
+        // Programmatic .value previews do not fire input; every input event is a query change.
         baseInputHandler(e);
     });
 
     // Handle result selection
-    async function handleResultAction(result) {
+    async function handleResultAction(result, event) {
+        if (spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending) return;
+        if (sidebarCommand.invoke(result, event)) return;
+        if (spaceActions.invoke(result, event)) return;
+        if (tabActions.invoke(result, event)) return;
+        if (archiveActions.invoke(result, event)) return;
+        if (splitActions.invoke(result, event)) return;
         if (!result) {
             Logger.error('[Spotlight] No result provided');
             return;
@@ -634,44 +591,83 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         try {
             const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
 
-            // Add immediate visual feedback - close spotlight immediately for faster perceived performance
-            closeSpotlight();
-
-            // Navigate in background
-            await handleResultActionViaMessage(result, mode);
+            if (actionPending) return;
+            actionPending = true;
+            // Keep errors visible and avoid repeated Enter/clicks while an action is pending.
+            const response = await handleResultActionViaMessage(result, mode);
+            if (response.success) closeSpotlight();
+            else liveResults.handleActionFailure(result, response);
         } catch (error) {
             Logger.error('[Spotlight] Error in result action:', error);
+            bridgeStatus.showError(error.message);
+        } finally {
+            actionPending = false;
         }
     }
 
     // Keyboard navigation
-    input.addEventListener('keydown', SharedSpotlightLogic.createKeyDownHandler(
-        selectionManager,                      // SelectionManager for navigation
-        (selected) => handleResultAction(selected),  // Enter handler
-        () => closeSpotlight(),               // Escape handler
-        // true                                 // container focus check enabled for overlay mode
-    ));
+    const handleKeyDown = SharedSpotlightLogic.createKeyDownHandler(
+        selectionManager,
+        (selected, event) => handleResultAction(selected, event),
+        () => closeSpotlight()
+    );
+    input.addEventListener('keydown', event => {
+        if (isComposingKey(event) || event.ctrlKey || event.metaKey || event.altKey) return;
+        // Preserve native range selection; Shift+Tab is handled at the frame boundary.
+        if (event.shiftKey && ['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+        handleKeyDown(event);
+    });
+    const removeFocusContainment = containOverlayFocus(frameDocument, closeSpotlight);
 
     // Handle clicks on results
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
-        (result, index) => handleResultAction(result), // adapter: only pass result to existing handler
+        (result, index, event) => {
+            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) && event?.isTrusted !== true) return;
+            selectionInvalidated = false;
+            manuallySelected = true;
+            selectionManager.selectedIndex = index;
+            selectionManager.updateVisualSelection();
+            return handleResultAction(result, event);
+        },
         () => currentResults // function that returns current results
     );
 
     // Close spotlight function
-    function closeSpotlight() {
-        dialog.close();
+    function closeSpotlight(invalidated = false) {
+        if (spotlightClosed) return;
+        spotlightClosed = true;
+        searchQueryId++;
+        clearTimeout(prefillTimer);
+        // Invalidated extension APIs may throw during cleanup. Still retire all
+        // DOM/timer ownership; never notify a new worker about the old surface.
+        for (const cleanup of [removeGlobalCloseListener, removeFocusContainment,
+            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(), () => archiveActions.dispose(), () => splitActions.dispose(),
+            () => liveResults.dispose(), () => bridgeStatus.dispose(), () => dialog.close()]) {
+            try { cleanup(); } catch (error) { Logger.log('Overlay cleanup after invalidation:', error); }
+        }
+        if (invalidated !== true) SpotlightMessageClient.notifyClosed();
 
-        SpotlightMessageClient.notifyClosed();
+        removalTimer = setTimeout(disposeSpotlight, 200);
+    }
 
-        setTimeout(() => {
-            // Removing the host takes the dialog and both stylesheets with it.
-            if (host.parentNode) {
-                host.parentNode.removeChild(host);
-                window.arcifySpotlightInjected = false;
-            }
-        }, 200);
+    function disposeSpotlight(invalidated = false) {
+        closeSpotlight(invalidated);
+        clearTimeout(removalTimer);
+        dialog.removeEventListener('close', closeSpotlight);
+        // This instance owns only its host. An old close event/timer must never
+        // remove or change tracking for a newer, reopened instance.
+        host.remove();
+        if (activeOverlay?.host === host) {
+            activeOverlay = null;
+            if (overlayReceiver.ownsGlobals()) window.arcifySpotlightInjected = false;
+        }
+    }
+
+    function focusSpotlight() {
+        input.focus();
+        input.select();
+        input.scrollLeft = 0;
     }
 
     // Handle backdrop clicks
@@ -684,23 +680,30 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
     dialog.addEventListener('close', closeSpotlight);
 
     // Listen for global close messages from background script
-    SpotlightMessageClient.setupGlobalCloseListener(() => {
-        const existingDialog = getExistingSpotlightDialog();
-        if (existingDialog && existingDialog.open) {
-            closeSpotlight();
-        }
-    });
+    const removeGlobalCloseListener = SpotlightMessageClient.setupGlobalCloseListener(closeSpotlight);
+
+    activeOverlay = { host, dialog, mode: spotlightTabMode, close: closeSpotlight, dispose: disposeSpotlight, focus: focusSpotlight };
+    window.arcifySpotlightInjected = true;
 
     // Show dialog and focus input
-    dialog.showModal();
+    try {
+        // Check again after asynchronous style/settings work, before any modal.
+        if (options.expectedUrl !== undefined && options.expectedUrl !== window.location.href)
+            throw Object.assign(new Error('The source document changed.'), { changed: true });
+        dialog.showModal();
+        surface.resize();
+        if (stale?.retire() === false) throw new Error('The existing Spotlight receiver is still live.');
+    } catch (error) {
+        disposeSpotlight();
+        throw error;
+    }
 
     // Notify background that spotlight opened in this tab
     SpotlightMessageClient.notifyOpened();
 
     // Focus input immediately (no delay needed)
-    input.focus();
-    input.select();
-    input.scrollLeft = 0;
+    focusSpotlight();
+    if (recoveredDraft) input.setSelectionRange(recoveredDraft.start, recoveredDraft.end, recoveredDraft.direction);
 
     /**
      * PHASE 2: NON-BLOCKING INITIALIZATION OPTIMIZATIONS
@@ -720,37 +723,30 @@ async function activateSpotlight(spotlightTabMode = 'current-tab') {
         try {
             // Update active space color and group name asynchronously (non-blocking)
             const { color: realActiveSpaceColor, groupName } = await SpotlightMessageClient.getActiveSpaceColor();
+            if (spotlightClosed) return;
             activeGroupName = groupName;
             if (realActiveSpaceColor !== activeSpaceColor) {
                 // Update CSS variables by replacing the dedicated accent stylesheet
                 // wholesale -- no regex surgery on the main sheet.
                 accentStyleSheet.textContent =
-                    await SpotlightUtils.getAccentColorCSS(realActiveSpaceColor, ':host');
+                    await SpotlightUtils.getAccentColorCSS(realActiveSpaceColor, ':root');
             }
         } catch (error) {
             Logger.error('[Spotlight] Error updating active space color:', error);
         }
 
         // Load initial results after color update (if input is still empty)
-        if (!input.value.trim()) {
+        if (!spotlightClosed && !input.value.trim()) {
             loadInitialResults();
         }
     })();
 
+    return { open: true };
 }
 
-/**
- * LEGACY INJECTION COMPATIBILITY
- * 
- * Why this is needed: The old injection method sets window.arcifySpotlightTabMode before
- * loading this script. If that variable exists, we know we were injected the old way
- * and should activate immediately (not wait for a message).
- * 
- * This ensures backward compatibility and provides a fallback when the dormant
- * content script fails (e.g., on chrome:// URLs where content scripts don't run).
- */
-
-// If activated by background script injection (legacy mode), run immediately
-if (window.arcifySpotlightTabMode) {
-    activateSpotlight(window.arcifySpotlightTabMode);
-}
+// Register once per live isolated-world runtime. Re-evaluating the bundle is
+// intentionally inert when this receiver already exists, preserving its draft.
+overlayReceiver = installOverlayReceiver({
+    activate: activateSpotlight,
+    disposeInvalidated: () => activeOverlay?.dispose(true)
+});

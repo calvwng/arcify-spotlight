@@ -5,6 +5,8 @@
   "description": "Arc Browser (Spotlight)-like experience for your URL bar, including auto-complete, history, bookmarks and more",
   "permissions": [
     "tabs",
+    "activeTab",
+    "scripting",
     "tabGroups",
     "storage",
     "bookmarks",
@@ -16,6 +18,10 @@
   ],
   "chrome_url_overrides": {
     "newtab": "newtab.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "background": {
     "service_worker": "background.js",

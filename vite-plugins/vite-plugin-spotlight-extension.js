@@ -50,6 +50,11 @@ function getExtensionPlugins(isDev = false) {
         // Copy static files
         await fs.copy('manifest.json', `${outDir}/manifest.json`);
 
+        // The options page is a standalone module with no bundled dependencies.
+        for (const file of ['options.html', 'options.js', 'options.css']) {
+          await fs.copy(file, `${outDir}/${file}`);
+        }
+
         if (await fs.pathExists('assets')) {
           await fs.copy('assets', `${outDir}/assets`);
         }

@@ -81,22 +81,19 @@ export async function waitForExtension(browser) {
   return { worker, extensionId };
 }
 
-/**
- * The content-script overlay renders inside a shadow root on the host element
- * #arcify-spotlight-host, so plain CSS selectors cannot reach it.
- *
- * Two flavours are needed:
- * - overlaySelector() for Puppeteer selector APIs ($, $$, waitForSelector, type, click),
- *   which understand the '>>>' deep combinator.
- * - OVERLAY_HOST_SELECTOR passed as an argument into page.evaluate/waitForFunction bodies,
- *   which run raw DOM APIs in page context and must hop through .shadowRoot by hand.
- *
- * Neither applies to newtab.html -- that's a normal extension page with no shadow root.
- */
+/** The modal shell is in Shadow DOM; its UI owns a separate iframe document. */
 export const OVERLAY_HOST_SELECTOR = '#arcify-spotlight-host';
 
+// Only shell selectors (dialog/iframe) belong in this helper.
 export function overlaySelector(selector) {
   return `${OVERLAY_HOST_SELECTOR} >>> ${selector}`;
+}
+
+export async function getOverlayFrame(page) {
+  const element = await page.waitForSelector(overlaySelector('[data-testid="spotlight-frame"]'));
+  const frame = await element.contentFrame();
+  if (!frame) throw new Error('Spotlight frame document is unavailable');
+  return frame;
 }
 
 /**
