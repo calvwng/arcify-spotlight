@@ -14,8 +14,9 @@
 
 import { SpotlightUtils } from './ui-utilities.js';
 import { ResultType } from './search-types.js';
+import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 
-export const isActionResult = result => result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
@@ -94,7 +95,7 @@ export class SharedSpotlightLogic {
                         data-testid="spotlight-result">
                     <img class="arcify-spotlight-result-favicon"
                          src="${SpotlightUtils.getFaviconUrl(result)}"
-                         alt="favicon"
+                         alt="${isActionResult(result) ? '' : 'favicon'}"
                          data-fallback-icon="true">
                     <div class="arcify-spotlight-result-content">
                         <div class="arcify-spotlight-result-title">${SpotlightUtils.escapeHtml(formatted.title)}</div>
@@ -133,6 +134,7 @@ export class SharedSpotlightLogic {
      */
     static createKeyDownHandler(selectionManager, onEnter, onEscape, skipContainerCheck = true) {
         return (e) => {
+            if (e.isComposing || e.keyCode === 229) return;
             // Let SelectionManager handle navigation keys first
             if (selectionManager.handleKeyDown(e, skipContainerCheck)) {
                 return; // Event was handled by selection manager

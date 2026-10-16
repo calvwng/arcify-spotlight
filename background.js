@@ -15,16 +15,21 @@ import { getSettings } from './utils.js';
 import { arcifyProvider } from './shared/data-providers/arcify-provider.js';
 import { BookmarkUtils } from './bookmark-utils.js';
 import { arcifyBridge } from './shared/arcify-bridge.js';
+import { installArcifySpaceActionMessages } from './shared/arcify-space-actions.js';
 import { BRIDGE_TYPE, isExtensionId, isWindowId, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
 import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
 import { offerStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
 import { LIVE_TAB_CONTEXT, createLiveOverlayRegistry, createArcifyResultUpdates, installLiveTabResultUpdates } from './shared/live-tab-results.js';
 import { createActiveNewTabReuse, isBrowserNewTabAlias, isSameActiveTab } from './shared/active-newtab-reuse.js';
+import { boundedOverlayDelivery, captureOverlayCommand, installOverlayRecoveryValidation, isMissingOverlayReceiver, recoverOverlayReceiver } from './shared/overlay-recovery.js';
 
 installFavoriteWitness(chrome, arcifyBridge.favoriteWitness);
-
 const activeNewTabReuse = createActiveNewTabReuse(chrome);
+installOverlayRecoveryValidation(chrome);
+installArcifySpaceActionMessages(chrome, arcifyBridge, {
+    verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
+});
 
 // === Arcify Cache Event Listeners ===
 // MV3 REQUIREMENT: Register synchronously at top level for service worker restart handling
@@ -280,34 +285,43 @@ function supportsContentScripts(url) {
 // All entry points share the same per-window queue. Resolve a shortcut's origin
 // before waiting, so changing focused windows cannot retarget a queued command.
 const activationQueues = new Map();
-async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensureOpen = false, expectedPeerId = null } = {}) {
+async function injectSpotlightScript(spotlightTabMode, windowId = null, { ensureOpen = false, expectedPeerId = null, keyboardCommand = false, commandTab } = {}) {
     const allowDisabledFallback = windowId === null;
+    // activeTab belongs to THIS extension's browser-dispatched command. A peer
+    // launch or an internal message must never borrow or manufacture that grant.
+    const commandGuard = keyboardCommand ? captureOverlayCommand(chrome, commandTab) : null;
+    const commandSource = commandGuard ? await commandGuard.resolve() : null;
+    if (commandGuard && !commandSource) { commandGuard.dispose(); return false; }
+    if (commandSource) windowId = commandSource.windowId;
     if (windowId === null) {
         try {
             const [source] = await chrome.tabs.query({ active: true, currentWindow: true });
             windowId = source?.windowId;
         } catch { return false; }
     }
-    if (!isWindowId(windowId)) return false;
+    if (!isWindowId(windowId)) { commandGuard?.dispose(); return false; }
     const previous = activationQueues.get(windowId) || Promise.resolve();
     const promise = previous.catch(() => {}).then(async () => {
         if (expectedPeerId && await arcifyBridge.getPeerId() !== expectedPeerId)
             throw Object.assign(new Error('Arcify pairing changed.'), { code: 'UNAUTHORIZED' });
-        return activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback });
+        if (commandGuard && !await commandGuard.isCurrent()) return false;
+        return activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback, commandSource, commandGuard });
     });
     activationQueues.set(windowId, promise);
-    promise.finally(() => { if (activationQueues.get(windowId) === promise) activationQueues.delete(windowId); }).catch(() => {});
+    promise.finally(() => { commandGuard?.dispose(); if (activationQueues.get(windowId) === promise) activationQueues.delete(windowId); }).catch(() => {});
     return promise;
 }
 
 // Helper function to activate spotlight via content script messaging
-async function activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback }) {
+async function activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpen, allowDisabledFallback, commandSource, commandGuard }) {
+    const isCurrent = commandGuard ? () => commandGuard.isCurrent() : null;
+    const fallback = () => fallbackToChromeTabs(spotlightTabMode, windowId, isCurrent);
     try {
         // Check if spotlight is enabled
         const settings = await getSettings();
         if (!settings.enableSpotlight) {
             Logger.log("Spotlight is disabled in settings.");
-            if (!allowDisabledFallback) return false;
+            if (!allowDisabledFallback || (isCurrent && !await isCurrent())) return false;
 
             if (spotlightTabMode === SpotlightTabMode.NEW_TAB) {
                 Logger.log("Opening default new tab instead of spotlight new tab.");
@@ -323,7 +337,8 @@ async function activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpe
         }
 
         // Get the active tab
-        const [tab] = await chrome.tabs.query({ active: true, ...(windowId ? { windowId } : { currentWindow: true }) });
+        const tab = commandSource || (await chrome.tabs.query({ active: true, ...(windowId ? { windowId } : { currentWindow: true }) }))[0];
+        if (commandGuard && !await isCurrent()) return false;
         if (tab) {
             // tabs.create may finish before its new helper has committed. Do not
             // multiply it while loading, or interfere with a user navigation to it.
@@ -339,42 +354,54 @@ async function activateSpotlightInWindow(spotlightTabMode, windowId, { ensureOpe
             // Let the target content script own its lifecycle. Closing it here races its
             // delayed teardown and also prevents the normal shortcut from toggling it.
             await closeSpotlightInTrackedTabs(windowId, tab.id);
+            if (commandGuard && !await isCurrent()) return false;
             if (!supportsContentScripts(tab.url)) {
                 Logger.log("Tab URL doesn't support content scripts, opening custom new tab directly:", tab.url);
-                return await fallbackToChromeTabs(spotlightTabMode, windowId);
+                return await fallback();
             }
 
+            const message = {
+                action: 'activateSpotlight', mode: spotlightTabMode, ensureOpen,
+                tabUrl: tab.url, tabId: tab.id, ...(commandGuard ? { expectedUrl: tab.url } : {})
+            };
             try {
-                const response = await chrome.tabs.sendMessage(tab.id, {
-                    action: 'activateSpotlight',
-                    mode: spotlightTabMode,
-                    ensureOpen,
-                    tabUrl: tab.url,
-                    tabId: tab.id
-                });
-
-                if (response && response.success) {
-                    // Rebuild tracking even after a worker restart. Shortcut toggles
-                    // may intentionally close the UI; paired launches must leave it open.
+                const response = await boundedOverlayDelivery(commandGuard
+                    ? chrome.tabs.sendMessage(tab.id, message, { frameId: 0 })
+                    : chrome.tabs.sendMessage(tab.id, message));
+                if (commandGuard && !await isCurrent()) return false;
+                if (response?.success) {
                     if (response.open !== false) await spotlightOpenTabs.add(tab.id);
                     else await spotlightOpenTabs.remove([tab.id]);
                     return true;
                 }
-                return await fallbackToChromeTabs(spotlightTabMode, windowId);
+                // No acknowledgement is not proof of failure: it may have opened.
+                return response?.success === false && !response.changed ? await fallback() : false;
             } catch (messageError) {
-                Logger.log("Content script messaging failed, using new tab fallback:", messageError);
-                return await fallbackToChromeTabs(spotlightTabMode, windowId);
+                if (!isMissingOverlayReceiver(messageError)) {
+                    Logger.log('Overlay delivery is uncertain; leaving the current surface alone:', messageError);
+                    return false;
+                }
+                if (commandGuard) {
+                    const result = await recoverOverlayReceiver(chrome, tab, commandGuard, message);
+                    if (result.status === 'opened') {
+                        await spotlightOpenTabs.add(tab.id);
+                        return true;
+                    }
+                    if (result.status !== 'fallback') return false;
+                }
+                return await fallback();
             }
         }
     } catch (error) {
         Logger.log("All spotlight activation methods failed, using Chrome tab fallback:", error);
-        return await fallbackToChromeTabs(spotlightTabMode, windowId);
+        return await fallback();
     }
 }
 
 // Helper function for Chrome tab fallback when spotlight injection fails
 async function fallbackToChromeTabs(spotlightTabMode, windowId = null, isCurrent = null) {
     try {
+        if (isCurrent && !await isCurrent()) return false;
         await closeSpotlightInTrackedTabs(windowId);
         if (isCurrent && !await isCurrent()) return false;
 
@@ -389,11 +416,11 @@ async function fallbackToChromeTabs(spotlightTabMode, windowId = null, isCurrent
 }
 
 // Listen for commands
-chrome.commands.onCommand.addListener(async function (command) {
+chrome.commands.onCommand.addListener(async function (command, tab) {
     if (command === "toggleSpotlight") {
-        await injectSpotlightScript(SpotlightTabMode.CURRENT_TAB);
+        await injectSpotlightScript(SpotlightTabMode.CURRENT_TAB, null, { keyboardCommand: true, commandTab: tab });
     } else if (command === "toggleSpotlightNewTab") {
-        await injectSpotlightScript(SpotlightTabMode.NEW_TAB);
+        await injectSpotlightScript(SpotlightTabMode.NEW_TAB, null, { keyboardCommand: true, commandTab: tab });
     }
 });
 

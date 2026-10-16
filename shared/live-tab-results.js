@@ -246,9 +246,10 @@ export function mountLiveTabResults({ api = chrome, document: doc = document, wi
         },
         dispose() {
             disposed = true; clearTimeout(timer); removed.clear(); pairedDirty = null;
-            api.runtime.onMessage.removeListener(receive);
+            // DOM cleanup must survive an invalidated extension runtime.
             doc.removeEventListener('visibilitychange', resume);
             win.removeEventListener('focus', resume);
+            api.runtime.onMessage.removeListener(receive);
         }
     };
 }

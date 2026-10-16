@@ -7,6 +7,7 @@ Spotlight can still run standalone.
 ## Documentation
 
 - [Pairing: setup, usage, mechanics, limitations, and recovery](docs/ARCIFY-BRIDGE.md)
+- [Overlay reload recovery, permissions, and restricted-page limits](docs/OVERLAY-RECOVERY.md)
 - [Fork backlog: deferred considerations, not implemented features](docs/BACKLOG.md)
 - [Inherited project roadmap](.planning/ROADMAP.md) (historical upstream planning)
 

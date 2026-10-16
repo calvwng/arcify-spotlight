@@ -472,3 +472,8 @@ Paired mocked verification from the Arcify checkout:
 the real adapter, receiver and transport code with mocked Chrome APIs; it is not
 browser/native-keyboard evidence. Arcify's `docs/favorite-continuity.md` documents
 the complete commit ordering, provisional recovery receipts and lifecycle limits.
+
+## Optional context actions
+
+See [Space actions](SPACE-ACTIONS.md) for the initial settings/folder/Pin/Remove
+slice, exact-identity protocol contract, confirmation behavior, and test limits.

@@ -27,6 +27,16 @@ beforeEach(() => {
 afterEach(() => { mounted?.dispose(); mounted = null; cleanup?.(); cleanup = null; vi.useRealTimers(); });
 
 describe('live tab result lifecycle', () => {
+    it('removes DOM resume listeners even when an invalidated runtime refuses listener cleanup', async () => {
+        const removeDocument = vi.spyOn(document, 'removeEventListener');
+        const removeWindow = vi.spyOn(window, 'removeEventListener');
+        await mount();
+        api.runtime.onMessage.removeListener = () => { throw new Error('Extension context invalidated.'); };
+        expect(() => mounted.dispose()).toThrow('Extension context invalidated.');
+        expect(removeDocument).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+        expect(removeWindow).toHaveBeenCalledWith('focus', expect.any(Function));
+        mounted = null; removeDocument.mockRestore(); removeWindow.mockRestore();
+    });
     it('invalidates only exact live tab identities and preserves saved bookmarks and URL twins', () => {
         expect(isTabResultRemoved(tabResult(11), [11])).toBe(true);
         expect(isTabResultRemoved(tabResult(12), [11])).toBe(false);

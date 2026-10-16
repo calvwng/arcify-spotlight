@@ -20,7 +20,9 @@ beforeEach(() => {
     HTMLElement.prototype.scrollIntoView = vi.fn();
     chromeMock.tabs.getCurrent = vi.fn().mockResolvedValue({ id: 9, windowId: 2, url: 'chrome://newtab/' });
     chromeMock.storage.local.get.mockResolvedValue({ arcifyBridgePeerId: PEER });
-    chromeMock.storage.onChanged.addListener.mockImplementation(listener => { storageChanged = listener; });
+    const storageListeners = [];
+    storageChanged = (...args) => storageListeners.forEach(listener => listener(...args));
+    chromeMock.storage.onChanged.addListener.mockImplementation(listener => { storageListeners.push(listener); });
     initialResults = [ordinary]; available = true;
     chromeMock.runtime.sendMessage.mockImplementation((message, request, callback) => {
         if (typeof message === 'string') {

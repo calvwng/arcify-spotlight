@@ -5,6 +5,8 @@
   "description": "Arc Browser (Spotlight)-like experience for your URL bar, including auto-complete, history, bookmarks and more",
   "permissions": [
     "tabs",
+    "activeTab",
+    "scripting",
     "tabGroups",
     "storage",
     "bookmarks",

@@ -1,3 +1,4 @@
+import { ACTION_DEFINITIONS } from './arcify-space-actions-ui.js';
 /**
  * UI Utilities - Shared spotlight UI functions and formatting
  * 
@@ -136,6 +137,16 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
+        if (result.type === 'arcify-space-action') {
+            const icon = ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
+            const paths = {
+                settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="7"/>',
+                folder: '<path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M12 10v7m-3-3h6"/>',
+                pin: '<path d="m9 3 6 0-1 6 4 4H6l4-4Zm3 10v8"/>',
+                remove: '<path d="M4 7h16M9 7V3h6v4M6 7l1 14h10l1-14M10 10v7m4-7v7"/>'
+            };
+            return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[icon] || paths.settings}</svg>`)}`;
+        }
         if (result.type === 'arcify-sidebar-command') {
             // SVGs loaded through <img> cannot inherit the row's currentColor.
             // This neutral has at least 3.5:1 contrast on both the current
@@ -176,6 +187,10 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'arcify-space-action') {
+            const definition = ACTION_DEFINITIONS[result.metadata?.spaceAction?.command];
+            return definition || { title: 'Unavailable Arcify action', subtitle: '', action: '' };
+        }
         if (result.type === 'arcify-sidebar-command') {
             return { title: 'Open Arcify sidebar', subtitle: 'Arcify sidebar • This tab stays open', action: 'Open Sidebar' };
         }

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment-options {"url":"https://example.com/"}
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chromeMock } from '../mocks/chrome.js';
@@ -10,7 +11,7 @@ import './setup.js';
 // JSDOM does not implement dialogs: close queues its event as Chrome does, while all
 // overlay construction, cleanup, focus, and the 200 ms teardown use real DOM/timers.
 const peerId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const tab = { id: 42, windowId: 2, url: 'https://example.com', active: true, title: 'Example' };
+const tab = { id: 42, windowId: 2, url: 'https://example.com/', active: true, title: 'Example' };
 const sender = { id: chromeMock.runtime.id, tab, url: tab.url };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let backgroundListeners;
@@ -24,6 +25,19 @@ let logicalSnapshot;
 let frameWindows;
 let hostKeyEvents;
 let removeHostKeyListeners;
+let tabEvents;
+let currentDocumentId;
+const missingReceiver = () => new Error('Could not establish connection. Receiving end does not exist.');
+const shortcut = (name = 'toggleSpotlightNewTab', source = { ...activeTab }) =>
+    chromeMock.commands.onCommand.addListener.mock.lastCall[0](name, source);
+const emitTab = (name, ...args) => { for (const listener of [...tabEvents[name]]) listener(...args); };
+async function reloadOverlayBundle() {
+    vi.resetModules();
+    registrationTarget = contentListeners;
+    await import('../../overlay.js');
+    ({ SpotlightMessageClient: messageClient } = await import('../../shared/message-client.js'));
+}
+function invalidateReceiver() { contentListeners.length = 0; }
 
 function dispatch(listeners, message, from) {
     return new Promise(resolve => {
@@ -84,6 +98,8 @@ beforeEach(async () => {
         return documents.get(this);
     });
     document.body.replaceChildren();
+    delete window.__arcifySpotlightReceiverV1;
+    window.history.replaceState({}, '', 'https://example.com/');
     delete window.arcifySpotlightTabMode;
     delete window.arcifySpotlightInjected;
     delete window.arcifyCurrentTabUrl;
@@ -93,6 +109,15 @@ beforeEach(async () => {
     externalListeners = [];
     activeTab = { ...tab };
     nextRequest = 0; logicalSnapshot = null;
+    currentDocumentId = 'source-document';
+    tabEvents = {};
+    for (const name of ['onUpdated', 'onDetached', 'onReplaced', 'onActivated', 'onRemoved']) {
+        tabEvents[name] = [];
+        chromeMock.tabs[name] = {
+            addListener: vi.fn(listener => tabEvents[name].push(listener)),
+            removeListener: vi.fn(listener => { tabEvents[name] = tabEvents[name].filter(value => value !== listener); })
+        };
+    }
     let session = {};
     chromeMock.storage.session = { get: vi.fn(async () => structuredClone(session)), set: vi.fn(async value => { Object.assign(session, structuredClone(value)); }) };
     chromeMock.windows.get.mockImplementation(async id => ({ id, type: 'normal', incognito: false }));
@@ -103,13 +128,22 @@ beforeEach(async () => {
             if (index !== -1) listeners.splice(index, 1);
         }
     });
+    chromeMock.runtime.onMessage.hasListener.mockImplementation(listener => [...backgroundListeners, ...contentListeners].includes(listener));
     chromeMock.runtime.onMessageExternal.addListener.mockImplementation(listener => externalListeners.push(listener));
     chromeMock.storage.local.get.mockImplementation(async key => key === 'arcifyBridgePeerId' ? { arcifyBridgePeerId: peerId } : {});
     chromeMock.storage.sync.get.mockResolvedValue({ enableSpotlight: true });
     chromeMock.tabs.get.mockImplementation(async () => ({ ...activeTab }));
     chromeMock.tabs.query.mockImplementation(async query => query.windowId && query.windowId !== 2 ? [] : [{ ...activeTab }]);
-    chromeMock.tabs.sendMessage.mockImplementation((tabId, message) => tabId === tab.id
-        ? dispatch(contentListeners, message, { id: chromeMock.runtime.id }) : Promise.resolve(undefined));
+    chromeMock.tabs.sendMessage.mockImplementation((tabId, message, options) => {
+        if (tabId !== tab.id) return Promise.resolve(undefined);
+        if (!contentListeners.length || (options?.documentId && options.documentId !== currentDocumentId))
+            return Promise.reject(missingReceiver());
+        return dispatch(contentListeners, message, { id: chromeMock.runtime.id });
+    });
+    chromeMock.scripting = { executeScript: vi.fn(async () => {
+        await reloadOverlayBundle();
+        return [{ frameId: 0, documentId: currentDocumentId }];
+    }) };
     chromeMock.runtime.sendMessage.mockImplementation((message, request, callback) => {
         if (message === peerId) {
             callback({
@@ -119,7 +153,8 @@ beforeEach(async () => {
             });
             return;
         }
-        return dispatch(backgroundListeners, message, { ...sender, tab: activeTab });
+        return dispatch(backgroundListeners, message, { ...sender, tab: activeTab, frameId: 0,
+            documentId: currentDocumentId, documentLifecycle: 'active', url: window.location.href });
     });
     HTMLDialogElement.prototype.showModal = function () {
         if (!this.isConnected) throw new DOMException('Dialog is disconnected', 'InvalidStateError');
@@ -163,6 +198,7 @@ afterEach(async () => {
     delete HTMLDialogElement.prototype.close;
     delete HTMLElement.prototype.scrollIntoView;
     delete chromeMock.storage.session;
+    delete chromeMock.scripting;
     frameWindows.forEach(frameWindow => frameWindow.close());
     removeHostKeyListeners.forEach(remove => remove());
     vi.restoreAllMocks();
@@ -525,5 +561,254 @@ describe('overlay keyboard document isolation', () => {
         expect(host()).toBeNull();
         expect(contentListeners).toHaveLength(1);
         expect(messageClient.errorListeners.size).toBe(0);
+    });
+});
+
+describe('keyboard-command stale receiver recovery through actual background and overlay modules', () => {
+    it('recovers after extension reload once, dormant until exact-document ensure-open, despite legacy globals', async () => {
+        invalidateReceiver();
+        window.arcifySpotlightTabMode = 'current-tab';
+        window.arcifySpotlightInjected = true;
+        const inject = chromeMock.scripting.executeScript.getMockImplementation();
+        chromeMock.scripting.executeScript.mockImplementation(async options => {
+            const result = await inject(options);
+            expect(host()).toBeNull(); // Loading the bundle itself never opens.
+            return result;
+        });
+        await shortcut();
+        expectOpen();
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledExactlyOnceWith({
+            target: { tabId: 42, frameIds: [0] }, world: 'ISOLATED', files: ['overlay.js'], injectImmediately: true
+        });
+        const opens = chromeMock.tabs.sendMessage.mock.calls.filter(([, message]) => message.action === 'activateSpotlight');
+        expect(opens).toHaveLength(2);
+        expect(opens[0]).toEqual([42, expect.objectContaining({ ensureOpen: false, expectedUrl: tab.url }), { frameId: 0 }]);
+        expect(opens[1]).toEqual([42, expect.objectContaining({ ensureOpen: true, recovery: true,
+            tabId: 42, tabUrl: tab.url, expectedUrl: tab.url, mode: 'new-tab' }), { documentId: 'source-document' }]);
+        expect(contentListeners).toHaveLength(3);
+    });
+
+    it('replaces a marked invalidated surface only after opening and preserves its input draft/range', async () => {
+        await activate();
+        input().value = 'unfinished query';
+        input().setSelectionRange(3, 8, 'backward');
+        const oldHost = host();
+        invalidateReceiver();
+        await shortcut();
+        expectOpen();
+        expect(host()).not.toBe(oldHost);
+        expect(oldHost.isConnected).toBe(false);
+        expect(input().value).toBe('unfinished query');
+        expect([input().selectionStart, input().selectionEnd, input().selectionDirection]).toEqual([3, 8, 'backward']);
+        await pause(220);
+        expectOpen();
+        expect(input().value).toBe('unfinished query');
+        expect(contentListeners).toHaveLength(3);
+        expect(messageClient.errorListeners.size).toBe(1);
+    });
+
+    it.each(['switch', 'detach'])('cancels recovery when source %s occurs during awaited renderer initialization', async change => {
+        invalidateReceiver();
+        let release; const styles = new Promise(resolve => { release = resolve; });
+        chromeMock.storage.sync.get.mockImplementation(key => Array.isArray(key) ? styles : Promise.resolve({ enableSpotlight: true }));
+        const recovery = shortcut(); await pause(0);
+        if (change === 'switch') { activeTab.id = 77; emitTab('onActivated', { tabId: 77, windowId: 2 }); }
+        else emitTab('onDetached', 42, { oldWindowId: 2 });
+        release({}); await recovery;
+        expect(host()).toBeNull(); expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
+    });
+
+    it('cancels an outstanding recovery capability after a worker restart and allows a fresh deliberate command', async () => {
+        invalidateReceiver();
+        let release; const styles = new Promise(resolve => { release = resolve; });
+        chromeMock.storage.sync.get.mockImplementation(key => Array.isArray(key) ? styles : Promise.resolve({ enableSpotlight: true }));
+        const recovery = shortcut(); await pause(0);
+        await restartBackground(); release({}); await recovery;
+        expect(host()).toBeNull(); expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        chromeMock.storage.sync.get.mockResolvedValue({ enableSpotlight: true });
+        await shortcut(); expectOpen(); expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
+    });
+
+    it('captures the latest stranded draft after awaited styles, including edits while recovery is pending', async () => {
+        await activate(); input().value = 'before recovery';
+        const oldHost = host(); invalidateReceiver();
+        let release; const styles = new Promise(resolve => { release = resolve; });
+        chromeMock.storage.sync.get.mockImplementation(key => Array.isArray(key) ? styles : Promise.resolve({ enableSpotlight: true }));
+        const recovery = shortcut(); await pause(0);
+        expect(host()).toBe(oldHost);
+        input().value = 'edited while recovery waited'; input().setSelectionRange(7, 12, 'forward');
+        release({}); await recovery;
+        expectOpen(); expect(input().value).toBe('edited while recovery waited');
+        expect([input().selectionStart, input().selectionEnd, input().selectionDirection]).toEqual([7, 12, 'forward']);
+    });
+
+    it('recovers a marked orphan across isolated-world replacement without a surviving registry', async () => {
+        await activate(); input().value = 'keep across worlds';
+        const oldHost = host();
+        invalidateReceiver(); delete window.__arcifySpotlightReceiverV1;
+        await shortcut();
+        expectOpen(); expect(input().value).toBe('keep across worlds'); expect(oldHost.isConnected).toBe(false);
+    });
+
+    it('leaves legacy/unmarked drafts intact rather than guessing ownership during the first upgrade', async () => {
+        await activate(); input().value = 'legacy draft';
+        const original = host();
+        original.removeAttribute('data-arcify-spotlight-owner');
+        invalidateReceiver();
+        await shortcut();
+        expect(host()).toBe(original); expect(input().value).toBe('legacy draft');
+        expect(document.querySelectorAll('#arcify-spotlight-host')).toHaveLength(1);
+        expect(chromeMock.tabs.create).toHaveBeenCalledOnce();
+    });
+
+    it('retains an invalidated draft if replacement modal creation fails', async () => {
+        await activate(); input().value = 'still recoverable';
+        const original = host(); invalidateReceiver();
+        HTMLDialogElement.prototype.showModal = () => { throw new Error('Modal unavailable'); };
+        await shortcut();
+        expect(host()).toBe(original); expect(input().value).toBe('still recoverable');
+        expect(document.querySelectorAll('#arcify-spotlight-host')).toHaveLength(1);
+        expect(chromeMock.tabs.create).toHaveBeenCalledOnce();
+    });
+
+    it('reuses a live receiver during duplicate bundle evaluation without extra listeners, modal or draft reset', async () => {
+        await activate(); input().value = 'live draft';
+        const original = host();
+        await reloadOverlayBundle(); await reloadOverlayBundle();
+        expect(host()).toBe(original); expect(input().value).toBe('live draft'); expect(contentListeners).toHaveLength(3);
+        await activate({ ensureOpen: true });
+        expectOpen(); expect(input().value).toBe('live draft');
+    });
+
+    it('serializes concurrent commands: one repair, then ordinary toggle semantics', async () => {
+        invalidateReceiver();
+        await Promise.all([shortcut(), shortcut()]);
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        await pause(220);
+        expect(host()).toBeNull(); expect(contentListeners).toHaveLength(1);
+    });
+
+    it.each(['The message port closed before a response was received.', 'Overlay delivery timed out.', 'Unexpected transport failure'])
+    ('never reinjects or creates/closes a helper after uncertain delivery: %s', async error => {
+        const send = chromeMock.tabs.sendMessage.getMockImplementation();
+        chromeMock.tabs.sendMessage.mockImplementation(async (...args) => {
+            if (args[1].action === 'activateSpotlight') {
+                await send(...args); input().value = 'delivery succeeded; response lost';
+                throw new Error(error);
+            }
+            return send(...args);
+        });
+        await shortcut();
+        expectOpen(); expect(input().value).toBe('delivery succeeded; response lost');
+        expect(chromeMock.scripting.executeScript).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.sendMessage.mock.calls.filter(([, message]) => message.action === 'closeSpotlight')).toHaveLength(0);
+    });
+
+    it('does not interpret a lost/undefined acknowledgement as proof that the overlay failed', async () => {
+        const send = chromeMock.tabs.sendMessage.getMockImplementation();
+        chromeMock.tabs.sendMessage.mockImplementation(async (...args) => { await send(...args); return undefined; });
+        await shortcut(); expectOpen(); expect(chromeMock.scripting.executeScript).not.toHaveBeenCalled();
+    });
+
+    it.each(['before injection', 'after injection'])('abandons same-URL reload %s without reopening or fallback', async phase => {
+        invalidateReceiver();
+        const navigate = () => { currentDocumentId = 'new-document'; emitTab('onUpdated', 42, { status: 'loading' }); };
+        if (phase === 'before injection') chromeMock.tabs.sendMessage.mockImplementation(async () => { navigate(); throw missingReceiver(); });
+        else {
+            const inject = chromeMock.scripting.executeScript.getMockImplementation();
+            chromeMock.scripting.executeScript.mockImplementation(async options => { const result = await inject(options); navigate(); return result; });
+        }
+        await shortcut();
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledTimes(phase === 'before injection' ? 0 : 1);
+        expect(host()).toBeNull(); expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+    });
+
+    it('targets the returned document, never a later same-URL document even before its navigation event arrives', async () => {
+        invalidateReceiver();
+        const send = chromeMock.tabs.sendMessage.getMockImplementation();
+        chromeMock.tabs.sendMessage.mockImplementation(async (...args) => {
+            if (args[2]?.documentId) currentDocumentId = 'replacement-document';
+            return send(...args);
+        });
+        await shortcut();
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
+        expect(host()).toBeNull(); expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.sendMessage.mock.calls.filter(([, message]) => message.recovery)).toHaveLength(1);
+    });
+
+    it('checks the receiver URL again after asynchronous creation work without clearing a stranded draft', async () => {
+        invalidateReceiver();
+        const send = chromeMock.tabs.sendMessage.getMockImplementation();
+        chromeMock.tabs.sendMessage.mockImplementation(async (...args) => {
+            if (args[1].recovery) window.history.replaceState({}, '', '/new-document');
+            return send(...args);
+        });
+        await shortcut(); expect(host()).toBeNull(); expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['switch', 'detach', 'replace', 'remove', 'move', 'url', 'pending'])
+    ('abandons changed source context (%s) after missing receiver', async change => {
+        invalidateReceiver();
+        chromeMock.tabs.sendMessage.mockImplementation(async () => {
+            if (change === 'switch') { activeTab.id = 77; emitTab('onActivated', { tabId: 77, windowId: 2 }); }
+            if (change === 'detach') emitTab('onDetached', 42, { oldWindowId: 2 });
+            if (change === 'replace') emitTab('onReplaced', 77, 42);
+            if (change === 'remove') emitTab('onRemoved', 42, {});
+            if (change === 'move') activeTab.windowId = 3;
+            if (change === 'url') activeTab.url = 'https://example.com/other';
+            if (change === 'pending') activeTab.pendingUrl = 'https://example.com/other';
+            throw missingReceiver();
+        });
+        await shortcut();
+        expect(chromeMock.scripting.executeScript).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(host()).toBeNull();
+    });
+
+    it.each(['chrome://settings/', 'chrome-extension://other/page', 'file:///test.html', 'data:text/html,hi',
+        'blob:https://example.com/id', 'https://chromewebstore.google.com/detail/test', 'https://chrome.google.com/webstore/detail/test'])
+    ('uses the helper without injection on forbidden source %s', async url => {
+        invalidateReceiver(); activeTab.url = url;
+        await shortcut();
+        expect(chromeMock.scripting.executeScript).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.create).toHaveBeenCalledExactlyOnceWith({ url: chromeMock.runtime.getURL('newtab.html'), active: true, windowId: 2 });
+    });
+
+    it('keeps the browser-attested command tab/window rather than following a newly focused window', async () => {
+        invalidateReceiver();
+        chromeMock.tabs.query.mockImplementation(async query => query.currentWindow
+            ? [{ id: 99, windowId: 9, active: true, url: 'https://other.test/' }]
+            : [{ ...activeTab }]);
+        await shortcut(); expectOpen();
+        expect(chromeMock.scripting.executeScript.mock.calls[0][0].target.tabId).toBe(42);
+    });
+
+    it('falls back once after an injection denial, without repeating commands against the old source', async () => {
+        invalidateReceiver();
+        chromeMock.scripting.executeScript.mockRejectedValue(new Error('Cannot access this page.'));
+        chromeMock.tabs.create.mockImplementation(async options => {
+            activeTab = { ...tab, id: 50, url: options.url }; return activeTab;
+        });
+        await Promise.all([shortcut(), shortcut()]);
+        expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
+        expect(chromeMock.tabs.create).toHaveBeenCalledOnce();
+    });
+
+    it.each(['paired launch', 'internal message'])('does not borrow activeTab authorization from %s', async source => {
+        invalidateReceiver();
+        if (source === 'paired launch') expect(await launch()).toMatchObject({ ok: true });
+        else expect(await dispatch(backgroundListeners, { command: 'toggleSpotlightNewTab' }, sender)).toEqual({ success: true });
+        expect(chromeMock.scripting.executeScript).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.create).toHaveBeenCalledOnce();
+    });
+
+    it('recovers standalone Spotlight without requiring an Arcify peer', async () => {
+        chromeMock.storage.local.get.mockResolvedValue({});
+        await restartBackground(); invalidateReceiver();
+        await shortcut(); expectOpen();
+        input().value = 'standalone'; input().dispatchEvent(new Event('input', { bubbles: true }));
+        expect(frameDocument().querySelector('[data-result-type="search-query"]')).not.toBeNull();
+        expect(frameDocument().querySelector('[data-result-type="arcify-sidebar-command"]')).toBeNull();
     });
 });
