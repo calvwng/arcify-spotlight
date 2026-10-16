@@ -5,6 +5,7 @@
 export function resultIdentity(result) {
     if (!result) return null;
     const metadata = result.metadata || {};
+    if (result.type === 'arcify-tab-action') return JSON.stringify([result.type, metadata.tabAction]);
     if (result.type === 'arcify-space-action') return JSON.stringify([result.type, metadata.spaceAction]);
     if (result.type === 'arcify-sidebar-command') return JSON.stringify([result.type, metadata.sidebarPeerId]);
     const owner = metadata.arcifyBridge;

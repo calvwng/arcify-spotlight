@@ -14,10 +14,11 @@
 
 import { SpotlightUtils } from './ui-utilities.js';
 import { ResultType } from './search-types.js';
+import { isTabActionResult } from './arcify-tab-actions-protocol.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 import { resultIdentity } from './selection-manager.js';
 
-export const isActionResult = result => isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)

@@ -1,3 +1,4 @@
+import { tabActionDefinition } from './arcify-tab-actions-ui.js';
 import { ACTION_DEFINITIONS } from './arcify-space-actions-ui.js';
 /**
  * UI Utilities - Shared spotlight UI functions and formatting
@@ -137,9 +138,15 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
-        if (result.type === 'arcify-space-action') {
-            const icon = ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
+        if (['arcify-space-action', 'arcify-tab-action'].includes(result.type)) {
+            const icon = result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
             const paths = {
+                rename: '<path d="m4 17 11-11 3 3-11 11H4Zm10-10 3 3M4 22h16"/>',
+                link: '<path d="m10 14 4-4M9 17l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m3-1 2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',
+                duplicate: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+                mute: '<path d="M4 9h4l5-4v14l-5-4H4Zm13 0 5 6m0-6-5 6"/>',
+                space: '<rect x="3" y="4" width="7" height="16" rx="1"/><path d="M13 12h8m-3-3 3 3-3 3"/>',
+                move: '<path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M7 14h10m-3-3 3 3-3 3"/>',
                 settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="7"/>',
                 folder: '<path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M12 10v7m-3-3h6"/>',
                 pin: '<path d="m9 3 6 0-1 6 4 4H6l4-4Zm3 10v8"/>',
@@ -187,6 +194,7 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'arcify-tab-action') return tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context) || { title: 'Unavailable tab action', subtitle: '', action: '' };
         if (result.type === 'arcify-space-action') {
             const definition = ACTION_DEFINITIONS[result.metadata?.spaceAction?.command];
             return definition || { title: 'Unavailable Arcify action', subtitle: '', action: '' };

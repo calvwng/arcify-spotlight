@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ArcifySpaceActionsClient, resolveSpaceActionSource, installArcifySpaceActionMessages } from '../../shared/arcify-space-actions.js';
-import { validateActionContext, validateActionPayload } from '../../shared/arcify-space-actions-protocol.js';
+import { validateActionContext, validateActionPayload, validateActionScope } from '../../shared/arcify-space-actions-protocol.js';
 const OWN = 'a'.repeat(32), PEER = 'b'.repeat(32);
 const clone = value => structuredClone(value);
 const source = { tabId: 9, windowId: 2 };
@@ -83,7 +83,7 @@ describe('optional exact Space action adapter', () => {
             f.state.capabilities = []; return original(peerId, command);
         });
         expect(await f.client.read(source)).toBeNull();
-        expect(f.send.mock.calls.map(([, command]) => command)).toEqual(['hello', 'hello', 'hello']);
+        expect(f.send.mock.calls.map(([, command]) => command)).toEqual(['hello', 'hello', 'hello', 'hello']);
     });
     it.each(['TIMEOUT', 'UNAUTHORIZED', 'UNAVAILABLE'])('does not retry read failures %s', async code => {
         const f = fixture(); f.send.mockRejectedValue(Object.assign(new Error('Unavailable'), { code }));
@@ -148,4 +148,130 @@ describe('Space action source boundary', () => {
         expect(listener({ action: 'arcifySpaceAction', command: 'pinCurrentTab', scope: {}, fields: {}, surprise: true }, { id: OWN }, respond)).toBe(true);
         await vi.waitFor(() => expect(respond).toHaveBeenCalledWith(expect.objectContaining({ success: false, errorCode: 'INVALID_REQUEST' })));
     });
+});
+
+const destination = { spaceId: 'target', bookmarkFolderId: 'target-root' };
+function navigationFixture() {
+    const f = fixture(); f.state.capabilities.push('spaceNavigationV1');
+    f.state.navigation = { destinations: [{ ...destination, name: 'Target' }], inverted: false, sourceUrl: base.tab.url };
+    const project = () => {
+        const result = snapshot(f.state.context);
+        result.tabs[0].url = f.state.navigation.sourceUrl;
+        result.spaces.push({ id: 'target', name: 'Target', color: 'red', bookmarkFolderId: 'target-root', tabIds: [], temporaryTabIds: [], pinnedTabIds: [] });
+        return result;
+    };
+    f.send.mockImplementation(async (peer, command) => {
+        if (command === 'hello') return envelope({ extensionId: PEER, capabilities: f.state.capabilities, snapshot: project() });
+        if (command === 'navigationContext') return envelope({ extensionId: PEER, snapshot: project(), actionContext: clone(f.state.context), navigationContext: clone(f.state.navigation) });
+        const state = project();
+        if (command === 'switchSpace') state.activeSpaceId = 'target';
+        else if (command === 'moveCurrentTodayTab') {
+            state.spaces[0].temporaryTabIds = [10]; state.spaces[0].tabIds = [10];
+            state.spaces[1].temporaryTabIds = [9]; state.spaces[1].tabIds = [9]; state.tabs[0].spaceId = 'target';
+        }
+        return envelope({ snapshot: state, spaceId: 'target', tabId: command === 'switchSpace' ? null : 9 });
+    });
+    return f;
+}
+const navigationMutations = f => f.send.mock.calls.filter(([, command]) => ['switchSpace', 'moveCurrentTodayTab'].includes(command));
+describe('separately negotiated Space navigation', () => {
+    it.each(['switchSpace', 'moveCurrentTodayTab'])('dispatches %s once to exact freshly checked destination without a native fallback', async command => {
+        const f = navigationFixture(), scope = await f.client.read(source);
+        expect(scope.navigation).toEqual(f.state.navigation);
+        await expect(f.client.execute(source, scope, command, { destination })).resolves.toEqual({ command, spaceId: 'target', tabId: command === 'switchSpace' ? null : 9 });
+        expect(navigationMutations(f)).toHaveLength(1);
+        expect(navigationMutations(f)[0][2]).toEqual({ context: base, destination, sourceUrl: base.tab.url, windowId: 2,
+            ...(command === 'moveCurrentTodayTab' ? { inverted: false } : {}), supportedFeatures: ['globalFavoritesV1', 'spaceActionsV1', 'spaceNavigationV1'] });
+        expect(f.api.tabs.update).not.toHaveBeenCalled(); expect(f.api.tabs.create).not.toHaveBeenCalled();
+    });
+    it('preserves old peers and never sends new commands under spaceActionsV1 alone', async () => {
+        const f = fixture(), scope = await f.client.read(source);
+        expect(scope.navigation).toBeUndefined();
+        await expect(f.client.execute(source, scope, 'switchSpace', { destination })).rejects.toHaveProperty('code', 'UNSUPPORTED');
+        expect(navigationMutations(f)).toHaveLength(0);
+    });
+    it.each(['folder', 'removed', 'source-url', 'ordering', 'peer-generation', 'capability'])('blocks fresh %s drift before moving', async change => {
+        const f = navigationFixture(), scope = await f.client.read(source);
+        if (change === 'folder') f.state.navigation.destinations[0].bookmarkFolderId = 'replacement';
+        if (change === 'removed') f.state.navigation.destinations = [];
+        if (change === 'source-url') f.state.navigation.sourceUrl += 'changed';
+        if (change === 'ordering') f.state.navigation.inverted = true;
+        if (change === 'peer-generation') f.state.context.pairingGeneration = 'repaired';
+        if (change === 'capability') f.state.capabilities = [];
+        await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', { destination })).rejects.toBeTruthy();
+        expect(navigationMutations(f)).toHaveLength(0);
+    });
+    it.each([{ destination: { ...destination, name: 'Target' } }, { destination: { spaceId: 'other', bookmarkFolderId: 'root-other' } },
+        { destination, inverted: true }, { destination, sourceUrl: 'https://else.test/' }])('refuses invented or surplus fields %j', async fields => {
+        const f = navigationFixture(), scope = await f.client.read(source);
+        await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', fields)).rejects.toBeTruthy();
+        expect(navigationMutations(f)).toHaveLength(0);
+    });
+    it('permits switch from an exact helper but never borrows a tab to move', async () => {
+        const f = navigationFixture(); f.state.context.tab = null; f.state.navigation.sourceUrl = 'chrome://newtab/';
+        const scope = await f.client.read(source);
+        await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', { destination })).rejects.toBeTruthy();
+        await expect(f.client.execute(source, scope, 'switchSpace', { destination })).resolves.toMatchObject({ command: 'switchSpace', tabId: null });
+        expect(navigationMutations(f)).toHaveLength(1);
+    });
+    it.each(['TIMEOUT', 'INVALID_REQUEST', 'UNAUTHORIZED', 'PARTIAL_COMMIT'])('never retries %s after a navigation dispatch', async code => {
+        const f = navigationFixture(), scope = await f.client.read(source), original = f.send.getMockImplementation();
+        f.send.mockImplementation((peer, command, ...args) => command === 'moveCurrentTodayTab' ? Promise.reject(Object.assign(new Error('Unknown result'), { code })) : original(peer, command, ...args));
+        await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', { destination })).rejects.toHaveProperty('code', code);
+        expect(navigationMutations(f)).toHaveLength(1);
+    });
+    it.each(['spaceId', 'tabId', 'active-space', 'extra-field'])('rejects an incorrect %s acknowledgement instead of reusing another same-URL identity', async field => {
+        const f = navigationFixture(), scope = await f.client.read(source), original = f.send.getMockImplementation();
+        f.send.mockImplementation(async (...args) => {
+            const response = await original(...args);
+            if (args[1] === 'moveCurrentTodayTab') {
+                if (field === 'spaceId') response.spaceId = 'space';
+                if (field === 'tabId') response.tabId = 10;
+                if (field === 'active-space') response.snapshot.activeSpaceId = 'target';
+                if (field === 'extra-field') response.url = base.tab.url;
+            }
+            return response;
+        });
+        await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', { destination })).rejects.toHaveProperty('code', 'INVALID_RESPONSE');
+        expect(navigationMutations(f)).toHaveLength(1);
+    });
+    it.each(['duplicate-id', 'duplicate-folder', 'source-destination', 'extra-key', 'source-url'])('requires exact navigation scope: %s', async field => {
+        const f = navigationFixture(), scope = await f.client.read(source);
+        if (field === 'duplicate-id') scope.navigation.destinations.push({ ...destination, bookmarkFolderId: 'other', name: 'Other' });
+        if (field === 'duplicate-folder') scope.navigation.destinations.push({ ...destination, spaceId: 'other', name: 'Other' });
+        if (field === 'source-destination') scope.navigation.destinations[0].spaceId = 'space';
+        if (field === 'extra-key') scope.navigation.extra = true;
+        if (field === 'source-url') scope.navigation.sourceUrl += 'changed';
+        expect(() => validateActionScope(scope)).toThrow();
+    });
+});
+
+for (const change of ['inactive-source', 'missing-source', 'changed-source-url']) it(`rejects an empty-Space switch response with ${change}`, async () => {
+    const f = navigationFixture(), scope = await f.client.read(source), original = f.send.getMockImplementation();
+    f.send.mockImplementation(async (...args) => {
+        const response = await original(...args);
+        if (args[1] === 'switchSpace') {
+            if (change === 'inactive-source') { response.snapshot.tabs[0].active = false; response.snapshot.tabs[1].active = true; }
+            if (change === 'missing-source') { response.snapshot.tabs.shift(); response.snapshot.spaces[0].tabIds = [10]; response.snapshot.spaces[0].temporaryTabIds = [10]; }
+            if (change === 'changed-source-url') response.snapshot.tabs[0].url = 'https://changed.test/';
+        }
+        return response;
+    });
+    await expect(f.client.execute(source, scope, 'switchSpace', { destination })).rejects.toHaveProperty('code', 'INVALID_RESPONSE');
+    expect(navigationMutations(f)).toHaveLength(1);
+});
+for (const inverted of [false, true]) it(`requires the move acknowledgement to put the source at the visible bottom (${inverted})`, async () => {
+    const f = navigationFixture(); f.state.navigation.inverted = inverted;
+    const scope = await f.client.read(source), original = f.send.getMockImplementation();
+    f.send.mockImplementation(async (...args) => {
+        const response = await original(...args);
+        if (args[1] === 'moveCurrentTodayTab') {
+            response.snapshot.spaces[0].tabIds = []; response.snapshot.spaces[0].temporaryTabIds = [];
+            response.snapshot.spaces[1].tabIds = inverted ? [10, 9] : [9, 10];
+            response.snapshot.spaces[1].temporaryTabIds = [...response.snapshot.spaces[1].tabIds]; response.snapshot.tabs[1].spaceId = 'target';
+        }
+        return response;
+    });
+    await expect(f.client.execute(source, scope, 'moveCurrentTodayTab', { destination })).rejects.toHaveProperty('code', 'INVALID_RESPONSE');
+    expect(navigationMutations(f)).toHaveLength(1);
 });

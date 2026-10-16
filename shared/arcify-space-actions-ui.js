@@ -1,8 +1,10 @@
 /** Renderer-only action choices and prompts. Navigation and sidebar gestures stay separate. */
 import { PEER_KEY, PAIRING_GENERATION_KEY, bridgeError } from './arcify-bridge-protocol.js';
-import { SPACE_ACTION_TYPE, isSpaceActionResult, validateActionScope, sameActionContext, validFolderTitle, exactKeys, validateActionResult } from './arcify-space-actions-protocol.js';
+import { SPACE_NAVIGATION_COMMANDS, SPACE_ACTION_TYPE, isSpaceActionResult, validateActionScope, sameActionContext, validFolderTitle, exactKeys, validateActionResult } from './arcify-space-actions-protocol.js';
 export { isSpaceActionResult };
 export const ACTION_DEFINITIONS = {
+    switchSpace: { title: 'Switch Space', subtitle: 'Choose an existing Space • Focus its last open tab', action: 'Choose Space…', icon: 'space', terms: ['switch', 'change', 'select', 'choose', 'go', 'to', 'another', 'existing', 'space', 'workspace', 'arcify', 'the'] },
+    moveCurrentTodayTab: { title: 'Move current tab to another Space', subtitle: 'Exact Today tab • Append at the visible bottom • Keep this Space selected', action: 'Choose Space…', icon: 'move', terms: ['move', 'current', 'this', 'today', 'tab', 'to', 'another', 'existing', 'space', 'workspace', 'arcify', 'the'] },
     openSettings: { title: 'Open Arcify settings', subtitle: 'Arcify settings • This tab stays open', action: 'Open settings', icon: 'settings', terms: ['open', 'show', 'arcify', 'settings', 'preferences', 'options', 'the'] },
     createSpaceFolder: { title: 'Create folder in this Space', subtitle: 'Choose a name • Selected Arcify Space', action: 'Create folder', icon: 'folder', terms: ['create', 'make', 'new', 'add', 'named', 'folder', 'in', 'this', 'selected', 'space', 'arcify', 'a', 'the'] },
     pinCurrentTab: { title: 'Pin current tab to this Space', subtitle: 'Save this exact Today tab as a Space pin', action: 'Pin tab', icon: 'pin', terms: ['pin', 'save', 'current', 'this', 'tab', 'to', 'space', 'arcify', 'the'] },
@@ -54,7 +56,7 @@ export function mountSpaceActionPrompt(parent, input) {
         current.resolve(value);
         if (restoreFocus && input.isConnected) input.focus();
     };
-    const show = (command, context) => {
+    const show = (command, context, navigation) => {
         if (active) return Promise.resolve(null);
         return new Promise(resolve => {
             const element = document.createElement('section');
@@ -65,16 +67,31 @@ export function mountSpaceActionPrompt(parent, input) {
             element.style.cssText = 'padding:16px 20px;display:grid;gap:12px;background:#2d2d2d;color:#fff;font:14px/1.5 system-ui;';
             const heading = document.createElement('h2'); heading.id = `${id}-title`; heading.style.cssText = 'font:600 16px/1.4 system-ui;margin:0';
             const description = document.createElement('p'); description.id = `${id}-description`; description.style.margin = '0';
+            const choosing = SPACE_NAVIGATION_COMMANDS.includes(command), moving = command === 'moveCurrentTodayTab';
             const removing = command === 'removeCurrentPin';
-            heading.textContent = removing ? 'Remove saved Space pin?' : 'Create a folder';
-            description.textContent = removing
+            heading.textContent = choosing ? moving ? 'Move current Today tab' : 'Switch Space' : removing ? 'Remove saved Space pin?' : 'Create a folder';
+            description.textContent = choosing ? moving
+                ? 'Choose another existing Space. This exact tab goes to its visible bottom; the selected Space and browser focus stay as they are.'
+                : 'Choose another existing Space. Its last open tab in this window will be focused; an empty Space leaves the current tab open.' : removing
                 ? `Delete the saved bookmark “${context.tab.bookmark.title || context.tab.bookmark.url}” from this Space? Every live tab linked to this exact pin will stay open as Today. Other same-address pins are unchanged.`
                 : 'Create a named folder at the root of the currently selected Arcify Space.';
             const style = document.createElement('style');
             style.textContent = '.arcify-space-action-prompt :focus-visible { outline: 2px solid #a8c7fa; outline-offset: 2px; }';
             element.append(style, heading, description);
-            let name;
-            if (!removing) {
+            let name, destination;
+            if (choosing) {
+                const label = document.createElement('label'); label.textContent = 'Destination Space'; label.htmlFor = `${id}-destination`;
+                destination = document.createElement('select'); destination.id = label.htmlFor; destination.dataset.spaceDestination = '';
+                destination.style.cssText = 'font:inherit;color:inherit;background:#202020;border:1px solid #888;border-radius:6px;padding:8px;';
+                const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = 'Choose a Space…'; placeholder.disabled = true; placeholder.selected = true; destination.append(placeholder);
+                for (const [index, target] of navigation.destinations.entries()) {
+                    const option = document.createElement('option'); option.value = String(index);
+                    option.textContent = navigation.destinations.filter(item => item.name === target.name).length > 1 ? `${target.name} (${target.spaceId})` : target.name || target.spaceId;
+                    destination.append(option);
+                }
+                element.append(label, destination);
+            }
+            if (!removing && !choosing) {
                 const label = document.createElement('label'); label.textContent = 'Folder name'; label.htmlFor = `${id}-name`;
                 name = document.createElement('input'); name.id = label.htmlFor; name.type = 'text'; name.maxLength = 256; name.autocomplete = 'off';
                 name.style.cssText = 'font:inherit;color:inherit;background:#202020;border:1px solid #888;border-radius:6px;padding:8px;';
@@ -83,7 +100,7 @@ export function mountSpaceActionPrompt(parent, input) {
             const error = document.createElement('div'); error.setAttribute('role', 'alert'); error.style.color = '#ffb7b7';
             const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:8px';
             const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
-            const confirm = document.createElement('button'); confirm.type = 'button'; confirm.textContent = removing ? 'Remove saved pin' : 'Create folder';
+            const confirm = document.createElement('button'); confirm.type = 'button'; confirm.textContent = choosing ? moving ? 'Move tab' : 'Switch Space' : removing ? 'Remove saved pin' : 'Create folder';
             confirm.dataset.actionConfirm = command; cancel.dataset.actionCancel = '';
             for (const button of [cancel, confirm]) button.style.cssText = 'font:inherit;color:inherit;background:#414141;border:1px solid #888;border-radius:6px;padding:6px 12px;cursor:pointer';
             buttons.append(cancel, confirm); element.append(error, buttons);
@@ -92,6 +109,11 @@ export function mountSpaceActionPrompt(parent, input) {
             active = { element, resolve, inert }; parent.append(element);
             const submit = event => {
                 if (!trustedActionGesture(event)) return;
+                if (choosing) {
+                    const target = navigation.destinations.find((_, index) => String(index) === destination.value);
+                    if (!target) { error.textContent = 'Choose a destination Space first.'; destination.focus(); return; }
+                    close({ destination: { spaceId: target.spaceId, bookmarkFolderId: target.bookmarkFolderId } }); return;
+                }
                 const title = name?.value.trim();
                 if (name && !validFolderTitle(title)) { error.textContent = 'Enter a folder name of 1–256 characters without control characters.'; name.focus(); return; }
                 close(removing ? { confirmed: true } : { title });
@@ -107,17 +129,17 @@ export function mountSpaceActionPrompt(parent, input) {
                     event.preventDefault();
                     if (!trustedActionGesture(event)) return;
                     if (event.target === cancel) close(null);
-                    else if (event.target === confirm || name && event.target === name) submit(event);
+                    else if (event.target === confirm || name && event.target === name || destination && event.target === destination) submit(event);
                 }
                 if (event.key === 'Tab') {
-                    const controls = [name, cancel, confirm].filter(Boolean);
+                    const controls = [destination, name, cancel, confirm].filter(Boolean);
                     const index = controls.indexOf(document.activeElement);
                     if (event.shiftKey && index <= 0) { event.preventDefault(); controls.at(-1).focus(); }
                     else if (!event.shiftKey && index === controls.length - 1) { event.preventDefault(); controls[0].focus(); }
                 }
             });
             // A destructive prompt is safe under a held Enter key; Cancel owns initial focus.
-            (removing ? cancel : name).focus();
+            (choosing ? destination : removing ? cancel : name).focus();
         });
     };
     return { show, cancel: () => close(null), get active() { return Boolean(active); }, dispose: () => close(null, false) };
@@ -161,6 +183,8 @@ export class SpaceActionController {
     results(query = '') {
         if (!this.scope || this.disposed) return [];
         return Object.entries(ACTION_DEFINITIONS).flatMap(([command, definition]) => {
+            if (SPACE_NAVIGATION_COMMANDS.includes(command) && !this.scope.navigation?.destinations.length
+                || command === 'moveCurrentTodayTab' && this.scope.context.tab?.section !== 'today') return [];
             if (command === 'pinCurrentTab' && this.scope.context.tab?.section !== 'today' || command === 'removeCurrentPin' && this.scope.context.tab?.section !== 'saved') return [];
             if (command === 'removeCurrentPin' && query.trim() && !query.trim().split(/\s+/).some(word => matchActionQuery(word, ['remove', 'unpin', 'delete']) !== null)) return [];
             const matchScore = matchActionQuery(query, definition.terms);
@@ -185,16 +209,16 @@ export class SpaceActionController {
     async perform(action, revision) {
         try {
             let fields = {};
-            if (['createSpaceFolder', 'removeCurrentPin'].includes(action.command)) {
-                fields = await this.prompt.show(action.command, action.scope.context);
+            if (['createSpaceFolder', 'removeCurrentPin', ...SPACE_NAVIGATION_COMMANDS].includes(action.command)) {
+                fields = await this.prompt.show(action.command, action.scope.context, action.scope.navigation);
                 if (fields === null) return;
             }
             if (this.disposed || revision !== this.revision) return;
             const response = await this.request({ action: 'arcifySpaceAction', command: action.command, scope: action.scope, fields });
             if (this.disposed || revision !== this.revision) return;
             if (!exactKeys(response, ['success', 'result']) || response.success !== true) throw bridgeError(response?.errorCode || 'UNKNOWN_RESULT', response?.error || UNKNOWN);
-            validateActionResult(action.command, response.result, action.scope.context);
-            this.showSuccess({ openSettings: 'Arcify settings opened. This tab stays open.', createSpaceFolder: 'Folder created in the selected Space.', pinCurrentTab: 'Current tab saved as a Space pin.', removeCurrentPin: 'Saved pin removed. All linked tabs stay open as Today.' }[action.command]);
+            validateActionResult(action.command, response.result, action.scope.context, fields);
+            this.showSuccess({ switchSpace: 'Selected Space switched.', moveCurrentTodayTab: 'Current tab moved. This Space stays selected.', openSettings: 'Arcify settings opened. This tab stays open.', createSpaceFolder: 'Folder created in the selected Space.', pinCurrentTab: 'Current tab saved as a Space pin.', removeCurrentPin: 'Saved pin removed. All linked tabs stay open as Today.' }[action.command]);
             this.scope = null; this.onChange();
             this.ready = this.prepare();
         } catch (error) {

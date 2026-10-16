@@ -32,7 +32,7 @@ beforeEach(() => {
     chromeMock.storage.onChanged.addListener.mockImplementation(listener => listeners.push(listener));
     chromeMock.storage.onChanged.removeListener.mockImplementation(listener => { listeners = listeners.filter(item => item !== listener); });
     scope = structuredClone(base); initialResults = [ordinary];
-    mutation = vi.fn(async message => ({ success: true, result: { command: message.command, ...(message.command === 'createSpaceFolder' ? { folderId: 'created-folder' } : message.command === 'openSettings' ? { tabId: 99 } : { tabId: 9, bookmarkId: message.scope.context.tab?.bookmark?.id || 'new-pin' }) } }));
+    mutation = vi.fn(async message => ({ success: true, result: { command: message.command, ...(['switchSpace', 'moveCurrentTodayTab'].includes(message.command) ? { spaceId: message.fields.destination.spaceId, tabId: message.command === 'switchSpace' ? null : 9 } : message.command === 'createSpaceFolder' ? { folderId: 'created-folder' } : message.command === 'openSettings' ? { tabId: 99 } : { tabId: 9, bookmarkId: message.scope.context.tab?.bookmark?.id || 'new-pin' }) } }));
     chromeMock.runtime.sendMessage.mockImplementation(message => {
         if (message.action === 'arcifySpaceActionsContext') return Promise.resolve({ success: true, scope: structuredClone(scope) });
         if (message.action === 'arcifySpaceAction') return mutation(message);
@@ -192,5 +192,68 @@ describe('real newtab Space action UI', () => {
         expect(mutation).toHaveBeenCalledTimes(1); expect(document.querySelector('[role="status"]').textContent).toContain('did not confirm');
         resolve({ success: true, result: { command: 'pinCurrentTab', tabId: 9, bookmarkId: 'new' } }); await flush();
         expect(document.querySelector('[role="status"]').textContent).toContain('did not confirm'); expect(requests('spotlightHandleResult')).toHaveLength(0);
+    });
+});
+
+const enableNavigation = () => { scope.navigation = { sourceUrl: scope.context.tab?.url || 'chrome://newtab/', inverted: false,
+    destinations: [{ spaceId: 'target', bookmarkFolderId: 'target-root', name: 'Personal' }, { spaceId: 'other', bookmarkFolderId: 'other-root', name: 'Research' }] }; };
+const destinationSelect = () => dialog()?.querySelector('[data-space-destination]');
+describe('Space picker in the actual newtab document', () => {
+    it.each([['switch space', 'switchSpace'], ['move current tab to another space', 'moveCurrentTodayTab'], ['swich space', 'switchSpace'], ['move tab', 'moveCurrentTodayTab']])('opens %s as an explicit destination picker with retained web search', async (query, command) => {
+        enableNavigation(); await open(); type(query);
+        expect(page.selectionManager.getSelectedResult()?.metadata.spaceAction.command).toBe(command);
+        expect(page.resultsContainer.querySelector('[data-result-type="search-query"]')).not.toBeNull();
+        key('Enter'); expect(destinationSelect()).not.toBeNull(); expect(destinationSelect().value).toBe('');
+        expect(document.activeElement).toBe(destinationSelect()); expect(mutation).not.toHaveBeenCalled();
+        promptKey(destinationSelect(), 'Enter'); await flush();
+        expect(dialog().querySelector('[role="alert"]').textContent).toContain('Choose a destination'); expect(mutation).not.toHaveBeenCalled();
+    });
+    it.each([['switch space', 'switchSpace'], ['move current tab', 'moveCurrentTodayTab']])('requires a separate explicit target for %s and sends exact IDs once', async (query, command) => {
+        enableNavigation(); await open(); type(query); key('Enter');
+        const select = destinationSelect(); select.value = '1';
+        promptKey(select, 'Enter', { repeat: true }); promptKey(select, 'Enter', { isComposing: true }); promptKey(select, 'Enter', { keyCode: 229 });
+        dialog().querySelector('[data-action-confirm]').click(); await flush(); expect(mutation).not.toHaveBeenCalled();
+        promptKey(select, 'Enter'); key('Enter', { repeat: true }); await page.spaceActions.operation;
+        expect(mutation).toHaveBeenCalledTimes(1);
+        expect(mutation.mock.calls[0][0]).toMatchObject({ command, fields: { destination: { spaceId: 'other', bookmarkFolderId: 'other-root' } } });
+        expect(requests('spotlightHandleResult')).toHaveLength(0); expect(window.close).not.toHaveBeenCalled();
+    });
+    it('supports cancellation without losing typed query or moving focus to another browser tab', async () => {
+        enableNavigation(); await open(); type('move tab'); key('Enter');
+        destinationSelect().value = '0'; promptKey(destinationSelect(), 'Escape'); await page.spaceActions.operation;
+        expect(dialog()).toBeNull(); expect(mutation).not.toHaveBeenCalled(); expect(page.input.value).toBe('move tab'); expect(document.activeElement).toBe(page.input);
+    });
+    it('disambiguates equal Space names by exact Space identity and ignores tampered values', async () => {
+        enableNavigation(); scope.navigation.destinations[1].name = 'Personal'; await open(); type('switch space'); key('Enter');
+        expect([...destinationSelect().options].map(option => option.textContent)).toEqual(['Choose a Space…', 'Personal (target)', 'Personal (other)']);
+        destinationSelect().value = 'forged'; promptKey(destinationSelect(), 'Enter'); await flush();
+        expect(mutation).not.toHaveBeenCalled(); expect(dialog()).not.toBeNull();
+    });
+    it('offers Switch but never Move for a helper and never defaults to an empty-query action', async () => {
+        scope.context.tab = null; enableNavigation(); initialResults = []; await open();
+        expect(rows().some(row => row.textContent.includes('Switch Space'))).toBe(true);
+        expect(rows().some(row => row.textContent.includes('Move current'))).toBe(false);
+        expect(page.selectionManager.getSelectedResult()).toBeNull(); key('Enter'); expect(dialog()).toBeNull();
+    });
+    it('hides both choices if there is no other valid existing Space', async () => {
+        enableNavigation(); scope.navigation.destinations = []; await open();
+        expect(rows().some(row => /Switch Space|Move current/.test(row.textContent))).toBe(false);
+        type('move tab'); expect(page.selectionManager.getSelectedResult().type).toBe('search-query');
+    });
+    it('preserves explicitly selected web search and typed query through readiness refresh', async () => {
+        enableNavigation(); await open(); type('switch space'); key('ArrowDown');
+        expect(page.selectionManager.getSelectedResult().type).toBe('search-query'); const draft = page.input.value;
+        await page.spaceActions.prepare(); expect(page.selectionManager.getSelectedResult().type).toBe('search-query'); expect(page.input.value).toBe(draft);
+    });
+    it('cancels the picker on pairing revocation before any dispatch', async () => {
+        enableNavigation(); await open(); type('move tab'); key('Enter'); destinationSelect().value = '0'; scope = null;
+        listeners.forEach(listener => listener({ arcifyBridgePeerId: { newValue: '' } }, 'local'));
+        await page.spaceActions.operation; expect(dialog()).toBeNull(); expect(mutation).not.toHaveBeenCalled();
+    });
+    it('rejects a changed destination acknowledgement without replay or navigation', async () => {
+        enableNavigation(); mutation.mockResolvedValue({ success: true, result: { command: 'moveCurrentTodayTab', tabId: 9, spaceId: 'replacement' } });
+        await open(); type('move tab'); key('Enter'); destinationSelect().value = '0'; promptKey(destinationSelect(), 'Enter'); await page.spaceActions.operation;
+        key('Enter'); await flush(); expect(mutation).toHaveBeenCalledTimes(1); expect(requests('spotlightHandleResult')).toHaveLength(0);
+        expect(document.querySelector('[role="status"]').textContent).toContain('did not confirm'); expect(window.close).not.toHaveBeenCalled();
     });
 });

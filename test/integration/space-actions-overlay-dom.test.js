@@ -41,7 +41,7 @@ beforeEach(async () => {
     chromeMock.runtime.sendMessage.mockImplementation(async message => {
         calls.push(message);
         if (message.action === 'arcifySpaceActionsContext') return { success: true, scope: structuredClone(scope) };
-        if (message.action === 'arcifySpaceAction') return { success: true, result: { command: message.command, ...(message.command === 'createSpaceFolder' ? { folderId: 'new' } : { tabId: 9, bookmarkId: scope.context.tab.bookmark?.id || 'new' }) } };
+        if (message.action === 'arcifySpaceAction') return { success: true, result: { command: message.command, ...(['switchSpace', 'moveCurrentTodayTab'].includes(message.command) ? { spaceId: message.fields.destination.spaceId, tabId: message.command === 'switchSpace' ? null : 9 } : message.command === 'createSpaceFolder' ? { folderId: 'new' } : { tabId: 9, bookmarkId: scope.context.tab.bookmark?.id || 'new' }) } };
         if (message.action === 'arcifyBridgeStatus') return { success: true, status: { status: 'connected', peerId: PEER, capabilities: [] } };
         if (message.action === 'getActiveSpaceColor') return { success: true, color: 'purple' };
         return { success: true, results: [] };
@@ -112,5 +112,27 @@ describe('Space actions in the actual isolated overlay document', () => {
         fire(prompt(), 'keydown', { target: cancel, repeat: true }); expect(mutations()).toHaveLength(0); expect(prompt()).not.toBeNull();
         expect(document.querySelector('[role="dialog"]')).toBeNull(); expect(frame()).not.toBe(document);
         await dispatch({ action: 'closeSpotlight' }); await flush(); expect(mutations()).toHaveLength(0);
+    });
+});
+
+const withNavigation = () => { scope.navigation = { sourceUrl: scope.context.tab.url, inverted: false, destinations: [{ spaceId: 'target', bookmarkFolderId: 'target-root', name: 'Personal' }] }; };
+describe('Space navigation in the actual isolated overlay', () => {
+    it.each(['switch space', 'move tab'])('contains the %s picker, blocks held/IME Enter, and sends one explicit destination', async query => {
+        withNavigation(); await open(); type(query); fire(input(), 'keydown');
+        const original = host(), select = prompt().querySelector('select'); select.value = '0';
+        expect(document.querySelector('select')).toBeNull(); expect(frame().activeElement).toBe(select);
+        fire(prompt(), 'keydown', { target: select, repeat: true }); fire(prompt(), 'keydown', { target: select, isComposing: true });
+        prompt().querySelector('[data-action-confirm]').click(); await flush(); expect(mutations()).toHaveLength(0);
+        fire(prompt(), 'keydown', { target: select }); await flush();
+        expect(mutations()).toHaveLength(1); expect(mutations()[0].fields).toEqual({ destination: { spaceId: 'target', bookmarkFolderId: 'target-root' } });
+        expect(host()).toBe(original); expect(shell().open).toBe(true); expect(calls.some(message => message.action === 'spotlightHandleResult')).toBe(false);
+    });
+    it('keeps Escape inside the picker and external close cancels without dispatch', async () => {
+        withNavigation(); await open(); type('move tab'); fire(input(), 'keydown');
+        const select = prompt().querySelector('select'); select.value = '0';
+        const event = fire(prompt(), 'keydown', { target: select, key: 'Escape' }); await flush();
+        expect(event.stopPropagation).toHaveBeenCalled(); expect(prompt()).toBeNull(); expect(input().value).toBe('move tab'); expect(shell().open).toBe(true);
+        fire(input(), 'keydown'); expect(prompt()).not.toBeNull(); await dispatch({ action: 'closeSpotlight' }); await flush();
+        expect(mutations()).toHaveLength(0);
     });
 });

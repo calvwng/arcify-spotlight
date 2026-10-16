@@ -41,8 +41,8 @@ No permission is added for this action layer.
 All external messages retain protocol v1's authenticated extension-to-extension
 envelope and request ID. The optional supported feature and advertised capability
 are both `spaceActionsV1`. Actions require its negotiated presence. The adapter
-advertises `[globalFavoritesV1, spaceActionsV1]` on read-only hello; an exact
-`INVALID_REQUEST` can fall back to `[globalFavoritesV1]`, then a bare hello. Only
+first advertises `[globalFavoritesV1, spaceActionsV1, spaceNavigationV1]` on read-only hello; an exact
+`INVALID_REQUEST` can fall back to the original `[globalFavoritesV1, spaceActionsV1]` pair, then `[globalFavoritesV1]`, then a bare hello. Only
 hello is replayed. A peer without the action capability stays usable for ordinary
 Spotlight search/navigation and existing commands.
 
@@ -113,5 +113,8 @@ trusted-event flag; they do not establish paired live-browser acceptance. Before
 publishing, verify both paired extensions together in the supported acceptance
 browser, including the isolated overlay frame, restricted-page helper, exact
 Today/Space-pin identity, multi-window same-address copies, and safe cancellation.
-Switch Space extensions, moving, renaming/editing, duplicate/copy/mute/archive,
-and split-tab actions remain outside this slice.
+Switch Space and moving the current Today tab are a separate optional slice
+in [Space navigation](SPACE-NAVIGATION.md). Independent current-tab commands
+are documented in [TAB-ACTIONS.md](TAB-ACTIONS.md); they use `tabActionsV1`
+and leave the Space-action context unchanged. Archive and Split remain outside
+these slices.

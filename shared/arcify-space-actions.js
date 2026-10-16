@@ -2,7 +2,7 @@
 import { validateSnapshot } from './arcify-bridge.js';
 import { isBrowserNewTabAlias } from './active-newtab-reuse.js';
 import { GLOBAL_FAVORITES_FEATURE, PEER_KEY, PAIRING_GENERATION_KEY, bridgeError, isWindowId, sendBridgeRequest } from './arcify-bridge-protocol.js';
-import { SPACE_ACTIONS_FEATURE, SPACE_ACTION_COMMANDS, exactKeys, isActionId, validateActionContext, validateActionScope, validateActionPayload, sameActionContext } from './arcify-space-actions-protocol.js';
+import { SPACE_ACTIONS_FEATURE, SPACE_NAVIGATION_FEATURE, SPACE_NAVIGATION_COMMANDS, ALL_SPACE_ACTION_COMMANDS, validateNavigationContext, validateActionResult, exactKeys, isActionId, validateActionContext, validateActionScope, validateActionPayload, sameActionContext } from './arcify-space-actions-protocol.js';
 const fail = (code, message) => { throw bridgeError(code, message); };
 export class ArcifySpaceActionsClient {
     constructor(api, bridge, send = sendBridgeRequest) { this.api = api; this.bridge = bridge; this.send = send; }
@@ -25,7 +25,7 @@ export class ArcifySpaceActionsClient {
     async hello(pairing, windowId) {
         // Only read-only negotiation is retried; no action is replayed on any error.
         let hello;
-        for (const features of [[GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE], [GLOBAL_FAVORITES_FEATURE], null]) {
+        for (const features of [[GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE, SPACE_NAVIGATION_FEATURE], [GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE], [GLOBAL_FAVORITES_FEATURE], null]) {
             try { hello = await this.call(pairing, 'hello', { windowId, ...(features ? { supportedFeatures: features } : {}) }); break; }
             catch (error) { if (error.code !== 'INVALID_REQUEST' || features === null) throw error; }
         }
@@ -40,9 +40,10 @@ export class ArcifySpaceActionsClient {
         if (!pairing.peerId) return null;
         const hello = await this.hello(pairing, source.windowId);
         if (!hello.capabilities?.includes(SPACE_ACTIONS_FEATURE)) return null;
-        const response = await this.call(pairing, 'actionContext', { windowId: source.windowId, tabId: source.tabId,
-            supportedFeatures: [GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE] });
-        const keys = ['type', 'version', 'requestId', 'role', 'ok', 'extensionId', 'snapshot', 'actionContext'];
+        const navigation = hello.capabilities.includes(SPACE_NAVIGATION_FEATURE);
+        const response = await this.call(pairing, navigation ? 'navigationContext' : 'actionContext', { windowId: source.windowId, tabId: source.tabId,
+            supportedFeatures: [GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE, ...(navigation ? [SPACE_NAVIGATION_FEATURE] : [])] });
+        const keys = ['type', 'version', 'requestId', 'role', 'ok', 'extensionId', 'snapshot', 'actionContext', ...(navigation ? ['navigationContext'] : [])];
         if (!exactKeys(response, keys) || response.extensionId !== pairing.peerId) fail('INVALID_RESPONSE', 'Arcify did not confirm the action context.');
         validateSnapshot(response.snapshot, source.windowId, { allowOrdinaryFavorites: hello.capabilities.includes(GLOBAL_FAVORITES_FEATURE) });
         const context = validateActionContext(response.actionContext, source.windowId, source.tabId);
@@ -58,20 +59,58 @@ export class ArcifySpaceActionsClient {
                     bookmark.url !== context.tab.bookmark.url || bookmark.title !== context.tab.bookmark.title))
                 fail('INVALID_RESPONSE', 'Arcify returned conflicting tab or saved-pin context. Refresh Spotlight.');
         }
-        return { ...pairing, context };
+        if (navigation) {
+            validateNavigationContext(response.navigationContext, context);
+            const sourceTab = response.snapshot.tabs.find(tab => tab.id === context.sourceTabId);
+            if (sourceTab && (!sourceTab.active || sourceTab.url !== response.navigationContext.sourceUrl))
+                fail('INVALID_RESPONSE', 'Arcify returned conflicting source-tab context.');
+            for (const target of response.navigationContext.destinations) {
+                const matches = response.snapshot.spaces.filter(space => space.id === target.spaceId);
+                if (matches.length !== 1 || matches[0].bookmarkFolderId !== target.bookmarkFolderId || matches[0].name !== target.name)
+                    fail('INVALID_RESPONSE', 'Arcify returned a conflicting destination Space.');
+            }
+        }
+        return { ...pairing, context, ...(navigation ? { navigation: response.navigationContext } : {}) };
     }
     async execute(source, scope, command, fields, beforeDispatch = async () => {}) {
         validateActionScope(scope);
-        const fieldKeys = command === 'createSpaceFolder' ? ['title'] : command === 'removeCurrentPin' ? ['confirmed'] : [];
+        const navigation = SPACE_NAVIGATION_COMMANDS.includes(command);
+        const fieldKeys = navigation ? ['destination'] : command === 'createSpaceFolder' ? ['title'] : command === 'removeCurrentPin' ? ['confirmed'] : [];
         if (!exactKeys(fields, fieldKeys)) fail('INVALID_REQUEST', 'Invalid Arcify action fields.');
-        const payload = validateActionPayload(command, { context: scope.context, ...fields });
+        if (navigation && !scope.navigation) fail('UNSUPPORTED', 'This Arcify build does not support Space navigation.');
+        const payload = validateActionPayload(command, { context: scope.context, ...fields, ...(navigation ? { sourceUrl: scope.navigation.sourceUrl,
+            ...(command === 'moveCurrentTodayTab' ? { inverted: scope.navigation.inverted } : {}) } : {}) });
         return this.bridge.serializeAction(async () => {
             const fresh = await this.read(source, scope);
             if (!fresh) fail('UNSUPPORTED', 'This Arcify build does not support Space actions. Update both extensions.');
             if (!sameActionContext(fresh.context, scope.context)) fail('STALE_CONTEXT', 'The selected Space or current tab changed. Refresh Spotlight and choose the action again.');
+            if (navigation) {
+                const chosen = scope.navigation.destinations.find(target => target.spaceId === fields.destination.spaceId && target.bookmarkFolderId === fields.destination.bookmarkFolderId);
+                const current = fresh.navigation?.destinations.find(target => target.spaceId === fields.destination.spaceId);
+                if (!chosen || !sameActionContext(chosen, current) || scope.navigation.sourceUrl !== fresh.navigation.sourceUrl
+                    || command === 'moveCurrentTodayTab' && scope.navigation.inverted !== fresh.navigation.inverted)
+                    fail('STALE_CONTEXT', 'The chosen Space or Today ordering changed. Refresh Spotlight and choose again.');
+            }
             await beforeDispatch();
             const response = await this.call(fresh, command, { ...payload, windowId: source.windowId,
-                supportedFeatures: [GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE] });
+                supportedFeatures: [GLOBAL_FAVORITES_FEATURE, SPACE_ACTIONS_FEATURE, ...(navigation ? [SPACE_NAVIGATION_FEATURE] : [])] });
+            if (navigation) {
+                if (!exactKeys(response, ['type', 'version', 'requestId', 'role', 'ok', 'snapshot', 'spaceId', 'tabId']))
+                    fail('INVALID_RESPONSE', 'Arcify did not confirm the Space action. Check Arcify before trying again.');
+                const result = validateActionResult(command, { command, spaceId: response.spaceId, tabId: response.tabId }, scope.context, fields);
+                const snapshot = validateSnapshot(response.snapshot, source.windowId, { allowOrdinaryFavorites: true });
+                const target = snapshot.spaces.find(space => space.id === fields.destination.spaceId);
+                const live = snapshot.tabs.find(tab => tab.id === response.tabId);
+                const sourceTab = snapshot.tabs.find(tab => tab.id === source.tabId);
+                const visibleBottom = scope.navigation.inverted ? target?.temporaryTabIds[0] : target?.temporaryTabIds.at(-1);
+                if (target?.bookmarkFolderId !== fields.destination.bookmarkFolderId
+                    || command === 'moveCurrentTodayTab' && (snapshot.activeSpaceId !== scope.context.spaceId || !live?.active
+                        || live.spaceId !== target.id || live.url !== scope.context.tab.url || visibleBottom !== source.tabId)
+                    || command === 'switchSpace' && (snapshot.activeSpaceId !== target.id || response.tabId === null && (target.tabIds.length !== 0
+                        || (scope.context.tab || sourceTab) && (!sourceTab?.active || sourceTab.url !== scope.navigation.sourceUrl)) || response.tabId !== null && (!live?.active || live.spaceId !== target.id)))
+                    fail('INVALID_RESPONSE', 'The returned Space state did not confirm this action. Check Arcify before trying again.');
+                return result;
+            }
             const identityKeys = command === 'createSpaceFolder' ? ['folderId'] : command === 'openSettings' ? ['tabId'] : ['tabId', 'bookmarkId'];
             if (!exactKeys(response, ['type', 'version', 'requestId', 'role', 'ok', 'snapshot', ...identityKeys]) ||
                 identityKeys.some(key => key === 'tabId' ? !isWindowId(response[key]) : !isActionId(response[key])) ||
@@ -119,7 +158,7 @@ export function installArcifySpaceActionMessages(api, bridge, sourceOptions = {}
                     if (live.windowId !== source.windowId) fail('STALE_CONTEXT', 'The source tab moved. Reopen Spotlight.');
                     respond({ success: true, scope });
                 } else {
-                    if (!SPACE_ACTION_COMMANDS.includes(message.command) || !message.fields || typeof message.fields !== 'object' || Array.isArray(message.fields)) fail('INVALID_REQUEST', 'Invalid Spotlight action.');
+                    if (!ALL_SPACE_ACTION_COMMANDS.includes(message.command) || !message.fields || typeof message.fields !== 'object' || Array.isArray(message.fields)) fail('INVALID_REQUEST', 'Invalid Spotlight action.');
                     const result = await client.execute(source, message.scope, message.command, message.fields, async () => {
                         const live = await resolveSpaceActionSource(api, message, sender, sourceOptions);
                         if (live.windowId !== source.windowId) fail('STALE_CONTEXT', 'The source tab moved. Reopen Spotlight.');

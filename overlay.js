@@ -21,6 +21,7 @@ import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
 import { mountBridgeStatus } from './shared/bridge-status-ui.js';
 import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
+import { TabActionController, isTabActionResult } from './shared/arcify-tab-actions-ui.js';
 import { SpaceActionController, isSpaceActionResult } from './shared/arcify-space-actions-ui.js';
 import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
 import { createOverlaySurface, containOverlayFocus, isComposingKey } from './shared/overlay-surface.js';
@@ -338,6 +339,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let actionPending = false;
     let sidebarCommand;
     let spaceActions;
+    let tabActions;
     let manuallySelected = false;
     let selectionInvalidated = false;
     let spotlightClosed = false;
@@ -366,7 +368,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     const handleSelectionChange = (result, index) => {
         selectionInvalidated = false;
         manuallySelected = true;
-        if (isSidebarResult(result) || isSpaceActionResult(result)) return;
+        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -385,6 +387,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     });
     sidebarCommand = new SidebarCommandController({ showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     const liveResults = mountLiveTabResults({
         isActive: () => !spotlightClosed,
         onInvalidate: removedTabIds => {
@@ -393,7 +396,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
             updateDisplay();
         },
-        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
+        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
     });
 
     // Load initial results
@@ -505,7 +508,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || [])], query: typedQuery
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || [])], query: typedQuery
         });
     }
 
@@ -514,10 +517,10 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         if (spotlightClosed) return;
         const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous)) selectionInvalidated = true;
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
-        if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
         // A failed/revoked command or removed tab must not expose another action to
         // held Enter or a later async refresh. Fresh input/navigation can select again.
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
@@ -567,9 +570,10 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Handle result selection
     async function handleResultAction(result, event) {
-        if (spaceActions.pending) return;
+        if (spaceActions.pending || tabActions.pending) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
+        if (tabActions.invoke(result, event)) return;
         if (!result) {
             Logger.error('[Spotlight] No result provided');
             return;
@@ -610,7 +614,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
         (result, index, event) => {
-            if ((isSidebarResult(result) || isSpaceActionResult(result)) && event?.isTrusted !== true) return;
+            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result)) && event?.isTrusted !== true) return;
             selectionInvalidated = false;
             manuallySelected = true;
             selectionManager.selectedIndex = index;
@@ -629,7 +633,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         // Invalidated extension APIs may throw during cleanup. Still retire all
         // DOM/timer ownership; never notify a new worker about the old surface.
         for (const cleanup of [removeGlobalCloseListener, removeFocusContainment,
-            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(),
+            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(),
             () => liveResults.dispose(), () => bridgeStatus.dispose(), () => dialog.close()]) {
             try { cleanup(); } catch (error) { Logger.log('Overlay cleanup after invalidation:', error); }
         }
