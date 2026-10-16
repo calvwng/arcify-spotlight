@@ -64,7 +64,6 @@ export function mountSpaceActionPrompt(parent, input) {
             element.setAttribute('role', 'dialog'); element.setAttribute('aria-modal', 'true');
             const id = `arcify-action-${crypto.randomUUID()}`;
             element.setAttribute('aria-labelledby', `${id}-title`); element.setAttribute('aria-describedby', `${id}-description`);
-            element.style.cssText = 'padding:16px 20px;display:grid;gap:12px;background:#2d2d2d;color:#fff;font:14px/1.5 system-ui;';
             const heading = document.createElement('h2'); heading.id = `${id}-title`; heading.style.cssText = 'font:600 16px/1.4 system-ui;margin:0';
             const description = document.createElement('p'); description.id = `${id}-description`; description.style.margin = '0';
             const choosing = SPACE_NAVIGATION_COMMANDS.includes(command), moving = command === 'moveCurrentTodayTab';
@@ -75,8 +74,14 @@ export function mountSpaceActionPrompt(parent, input) {
                 : 'Choose another existing Space. Its last open tab in this window will be focused; an empty Space leaves the current tab open.' : removing
                 ? `Delete the saved bookmark “${context.tab.bookmark.title || context.tab.bookmark.url}” from this Space? Every live tab linked to this exact pin will stay open as Today. Other same-address pins are unchanged.`
                 : 'Create a named folder at the root of the currently selected Arcify Space.';
+            // Native controls and long names must not expand the grid beyond its isolated frame.
             const style = document.createElement('style');
-            style.textContent = '.arcify-space-action-prompt :focus-visible { outline: 2px solid #a8c7fa; outline-offset: 2px; }';
+            style.textContent = `
+                .arcify-space-action-prompt { box-sizing:border-box;min-width:0;max-width:100%;padding:16px 20px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;background:#2d2d2d;color:#fff;font:14px/1.5 system-ui; }
+                .arcify-space-action-prompt > *, .arcify-space-action-prompt button { box-sizing:border-box;min-width:0;max-width:100%;overflow-wrap:anywhere; }
+                .arcify-space-action-prompt input, .arcify-space-action-prompt select { width:100%; }
+                .arcify-space-action-prompt :focus-visible { outline:2px solid #a8c7fa; outline-offset:2px; }
+            `;
             element.append(style, heading, description);
             let name, destination;
             if (choosing) {
@@ -98,7 +103,7 @@ export function mountSpaceActionPrompt(parent, input) {
                 element.append(label, name);
             }
             const error = document.createElement('div'); error.setAttribute('role', 'alert'); error.style.color = '#ffb7b7';
-            const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:8px';
+            const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px';
             const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
             const confirm = document.createElement('button'); confirm.type = 'button'; confirm.textContent = choosing ? moving ? 'Move tab' : 'Switch Space' : removing ? 'Remove saved pin' : 'Create folder';
             confirm.dataset.actionConfirm = command; cancel.dataset.actionCancel = '';

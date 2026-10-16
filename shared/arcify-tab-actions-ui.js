@@ -37,18 +37,23 @@ export function mountTabActionPrompt(parent, input) {
             element.setAttribute('role', 'dialog'); element.setAttribute('aria-modal', 'true');
             const id = `arcify-tab-action-${crypto.randomUUID()}`;
             element.setAttribute('aria-labelledby', `${id}-title`); element.setAttribute('aria-describedby', `${id}-description`);
-            element.style.cssText = 'padding:16px 20px;display:grid;gap:12px;background:#2d2d2d;color:#fff;font:14px/1.5 system-ui;';
             const heading = document.createElement('h2'); heading.id = `${id}-title`; heading.style.cssText = 'font:600 16px/1.4 system-ui;margin:0';
             heading.textContent = editUrl ? 'Edit saved pin URL' : saved ? 'Rename saved Space pin' : 'Rename Today tab';
             const description = document.createElement('p'); description.id = `${id}-description`; description.style.margin = '0';
             description.textContent = editUrl ? 'Change the saved URL for this exact pin. Its saved title and the current page stay unchanged.' : saved ? 'Change the saved name for this exact pin and its linked tab display.' : 'Set a name for this Today tab. Leave it blank to use the page title.';
-            const style = document.createElement('style'); style.textContent = '.arcify-tab-action-prompt :focus-visible { outline:2px solid #a8c7fa; outline-offset:2px; }';
+            // Native controls and long names must not expand the grid beyond its isolated frame.
+            const style = document.createElement('style'); style.textContent = `
+                .arcify-tab-action-prompt { box-sizing:border-box;min-width:0;max-width:100%;padding:16px 20px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;background:#2d2d2d;color:#fff;font:14px/1.5 system-ui; }
+                .arcify-tab-action-prompt > *, .arcify-tab-action-prompt button { box-sizing:border-box;min-width:0;max-width:100%;overflow-wrap:anywhere; }
+                .arcify-tab-action-prompt input, .arcify-tab-action-prompt select { width:100%; }
+                .arcify-tab-action-prompt :focus-visible { outline:2px solid #a8c7fa; outline-offset:2px; }
+            `;
             const label = document.createElement('label'); label.textContent = editUrl ? 'Saved URL' : 'Name'; label.htmlFor = `${id}-input`;
             const name = document.createElement('input'); name.id = label.htmlFor; name.type = 'text'; name.autocomplete = 'off'; name.dataset.tabActionInput = '';
             name.maxLength = editUrl ? 16384 : 256; name.value = editUrl ? context.tab.bookmark.url : saved ? context.tab.bookmark.title : context.tab.alias || context.tab.title;
             name.style.cssText = 'font:inherit;color:inherit;background:#202020;border:1px solid #888;border-radius:6px;padding:8px;';
             const error = document.createElement('div'); error.setAttribute('role', 'alert'); error.style.color = '#ffb7b7';
-            const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:8px';
+            const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px';
             const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.dataset.actionCancel = '';
             const confirm = document.createElement('button'); confirm.type = 'button'; confirm.textContent = editUrl ? 'Save URL' : 'Save name'; confirm.dataset.actionConfirm = command;
             for (const button of [cancel, confirm]) button.style.cssText = 'font:inherit;color:inherit;background:#414141;border:1px solid #888;border-radius:6px;padding:6px 12px;cursor:pointer';
