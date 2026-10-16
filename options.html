@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arcify Spotlight · Connection settings</title>
+    <title>Arcify Spotlight · Settings</title>
+    <meta name="color-scheme" content="light dark">
+    <script src="shared/options-appearance.js"></script>
     <link rel="icon" href="assets/icon.png" type="image/png">
     <link rel="stylesheet" href="options.css">
 </head>
@@ -14,6 +16,18 @@
             <h1>Connect to Arcify</h1>
             <p>Pair Spotlight with your Arcify sidebar to search its spaces and saved tabs.</p>
         </header>
+
+        <section class="card" aria-labelledby="appearance-heading">
+            <h2 id="appearance-heading">Appearance</h2>
+            <label for="options-appearance">Options page theme</label>
+            <select id="options-appearance" aria-describedby="appearance-help">
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+            </select>
+            <p id="appearance-help" class="hint">System follows your device’s light or dark setting automatically. Your choice is saved for this options page.</p>
+            <p id="appearance-message" class="hint" role="status" aria-live="polite"></p>
+        </section>
 
         <section class="card" aria-labelledby="pairing-heading">
             <h2 id="pairing-heading">Pair both extensions</h2>

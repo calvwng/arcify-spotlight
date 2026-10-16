@@ -1,3 +1,60 @@
+export const OPTIONS_APPEARANCE_KEY = 'spotlightOptionsAppearance';
+
+function normalizeAppearance(value) {
+    return value === 'light' || value === 'dark' ? value : 'system';
+}
+
+/** Appearance is local to this extension's options page, independent of pairing. */
+export function initializeOptionsAppearance({
+    document = globalThis.document,
+    window = document?.defaultView,
+    storage
+} = {}) {
+    const select = document?.getElementById('options-appearance');
+    if (!select) return null;
+    const message = document.getElementById('appearance-message');
+    if (storage === undefined) {
+        try { storage = window?.localStorage; } catch { storage = null; }
+    }
+
+    function apply(value) {
+        const appearance = normalizeAppearance(value);
+        document.documentElement.dataset.appearance = appearance;
+        select.value = appearance;
+        return appearance;
+    }
+
+    let saved;
+    try { saved = storage?.getItem(OPTIONS_APPEARANCE_KEY); } catch { /* Use system. */ }
+    apply(saved);
+
+    function changeAppearance() {
+        const appearance = apply(select.value);
+        try {
+            if (!storage) throw new Error('Storage unavailable');
+            storage.setItem(OPTIONS_APPEARANCE_KEY, appearance);
+            message.textContent = '';
+        } catch {
+            message.textContent = 'Appearance applied for this page, but could not be saved. It may reset when you reopen settings.';
+        }
+    }
+
+    function syncAppearance(event) {
+        if (event.storageArea !== storage || (event.key !== OPTIONS_APPEARANCE_KEY && event.key !== null)) return;
+        apply(event.newValue);
+        message.textContent = '';
+    }
+
+    select.addEventListener('change', changeAppearance);
+    window?.addEventListener('storage', syncAppearance);
+    return {
+        destroy() {
+            select.removeEventListener('change', changeAppearance);
+            window?.removeEventListener('storage', syncAppearance);
+        }
+    };
+}
+
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 const STATUS_LABELS = {
     disabled: 'Disabled',
@@ -138,6 +195,7 @@ export function initializeBridgeOptions({
     return { ready, refresh, save, disconnect, copyOwnId };
 }
 
-if (globalThis.document?.getElementById('bridge-settings-form')) {
-    initializeBridgeOptions();
+if (globalThis.document) {
+    initializeOptionsAppearance();
+    if (document.getElementById('bridge-settings-form')) initializeBridgeOptions();
 }
