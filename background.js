@@ -15,6 +15,7 @@ import { getSettings } from './utils.js';
 import { arcifyProvider } from './shared/data-providers/arcify-provider.js';
 import { BookmarkUtils } from './bookmark-utils.js';
 import { arcifyBridge } from './shared/arcify-bridge.js';
+import { installArcifySplitActionMessages } from './shared/arcify-split-actions.js';
 import { installArcifyArchiveMessages } from './shared/arcify-archive-actions.js';
 import { installArcifyTabActionMessages } from './shared/arcify-tab-actions.js';
 import { installArcifySpaceActionMessages } from './shared/arcify-space-actions.js';
@@ -27,6 +28,7 @@ import { createActiveNewTabReuse, isBrowserNewTabAlias, isSameActiveTab } from '
 import { boundedOverlayDelivery, captureOverlayCommand, installOverlayRecoveryValidation, isMissingOverlayReceiver, recoverOverlayReceiver } from './shared/overlay-recovery.js';
 
 installFavoriteWitness(chrome, arcifyBridge.favoriteWitness);
+installArcifySplitActionMessages(chrome, arcifyBridge);
 const activeNewTabReuse = createActiveNewTabReuse(chrome);
 installOverlayRecoveryValidation(chrome);
 installArcifySpaceActionMessages(chrome, arcifyBridge, {

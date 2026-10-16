@@ -119,13 +119,16 @@ export function installLiveTabResultUpdates(api, getOverlayTabIds = () => []) {
         if (positiveId(removedTabId)) pending.get(key).removedTabIds.add(removedTabId);
         if (!timer) timer = setTimeout(flush, 30);
     };
+    listen(api.tabs.onActivated, info => changed(info?.windowId));
+    listen(api.windows?.onFocusChanged, () => changed(null));
+    listen(api.tabGroups?.onUpdated, group => changed(group?.windowId));
     listen(api.tabs.onCreated, tab => changed(tab.windowId));
     listen(api.tabs.onRemoved, (id, info) => changed(info?.windowId, id));
     listen(api.tabs.onDetached, (id, info) => changed(info?.oldWindowId, id));
     listen(api.tabs.onAttached, (id, info) => changed(info?.newWindowId));
     listen(api.tabs.onMoved, (id, info) => changed(info?.windowId));
     listen(api.tabs.onUpdated, (id, change, tab) => {
-        if (['url', 'title', 'pinned'].some(key => Object.hasOwn(change, key))) changed(tab?.windowId);
+        if (['url', 'title', 'pinned', 'status', 'groupId', 'splitViewId'].some(key => Object.hasOwn(change, key))) changed(tab?.windowId);
     });
     listen(api.tabs.onReplaced, (addedId, removedId) => {
         // Replacement may race a close; unknown window means refresh scoped callers.

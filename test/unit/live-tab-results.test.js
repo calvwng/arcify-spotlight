@@ -117,6 +117,13 @@ describe('live tab result lifecycle', () => {
 });
 
 describe('background tab-change fan-out', () => {
+    it.each(['groupId', 'splitViewId', 'status'])('refreshes native %s changes without mutation', async field => {
+        cleanup = installLiveTabResultUpdates(api, () => [12]);
+        api.tabs.onUpdated.listeners.forEach(listener => listener(12, { [field]: field === 'status' ? 'loading' : 4 }, { windowId: 2 }));
+        await vi.advanceTimersByTimeAsync(40);
+        expect(api.runtime.sendMessage).toHaveBeenCalledWith({ action: LIVE_TAB_RESULTS_CHANGED, windowId: 2, removedTabIds: [] });
+    });
+
     it.each([false, true])('delivers a detached overlay its old-window invalidation (old window closed: %s)', async oldWindowClosed => {
         await mount();
         source.windowId = 3;
