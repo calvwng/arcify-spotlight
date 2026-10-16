@@ -56,6 +56,39 @@ afterEach(async () => {
 async function open() { await dispatch({ action: 'activateSpotlight', mode: 'new-tab', tabUrl: 'https://same.test/', tabId: 9 }); await flush(); }
 const mutations = () => calls.filter(message => message.action === 'arcifySpaceAction');
 describe('Space actions in the actual isolated overlay document', () => {
+    it('keeps a focused result when the late action-context response repaints an unchanged search', async () => {
+        const send = chromeMock.runtime.sendMessage.getMockImplementation();
+        let releaseContext;
+        chromeMock.runtime.sendMessage.mockImplementation(message => message.action === 'arcifySpaceActionsContext'
+            ? new Promise(resolve => { releaseContext = resolve; }) : send(message));
+        await open(); type('w window');
+        const original = frame().querySelector('[data-testid="spotlight-result"]'); original.focus();
+        expect(frame().activeElement).toBe(original);
+        releaseContext({ success: true, scope: structuredClone(scope) }); await flush();
+        expect(original.isConnected).toBe(false);
+        expect(frame().activeElement.tagName).toBe('BUTTON');
+        expect(frame().activeElement.dataset.testid).toBe('spotlight-result');
+        expect(input().value).toBe('w window'); expect(mutations()).toHaveLength(0);
+    });
+    it.each(['pin current tab', ''])('safely returns a removed focused action to the input for query %j', async query => {
+        await open(); type(query); await flush();
+        frame().querySelector('[data-result-type="arcify-space-action"]').focus();
+        scope = null;
+        const invalidate = () => {
+            for (const [listener] of chromeMock.storage.onChanged.addListener.mock.calls) {
+                listener({ arcifyBridgePairingGeneration: { newValue: 'changed' } }, 'local');
+            }
+        };
+        invalidate(); await flush();
+        expect(frame().activeElement.tagName).toBe('INPUT'); expect(input().value).toBe(query);
+        fire(input(), 'keydown'); await flush();
+        expect(mutations()).toHaveLength(0);
+        expect(calls.some(message => message.action === 'spotlightHandleResult')).toBe(false);
+        scope = structuredClone(base); invalidate(); await flush();
+        fire(input(), 'keydown'); await flush();
+        expect(mutations()).toHaveLength(0);
+        expect(calls.some(message => message.action === 'spotlightHandleResult')).toBe(false);
+    });
     it('keeps Pin in the overlay and never invokes navigation or closes its host', async () => {
         await open(); const original = host(); type('pin current tab'); fire(input(), 'keydown'); await flush();
         expect(mutations()).toHaveLength(1); expect(calls.some(message => message.action === 'spotlightHandleResult')).toBe(false);

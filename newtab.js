@@ -466,6 +466,7 @@ export async function initializeSpotlight() {
     // Update the display with combined results
     function updateDisplay() {
         if (disposed) return;
+        const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
         if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
@@ -476,23 +477,27 @@ export async function initializeSpotlight() {
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
-            displayEmptyState();
+            displayEmptyState(previousResults);
             return;
         }
 
         // Use 'new-tab' mode for display so OPEN_TAB shows "Switch to Tab"
-        SharedSpotlightLogic.updateResultsDisplay(resultsContainer, [], currentResults, 'new-tab', activeGroupName);
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, currentResults, 'new-tab', activeGroupName, input)) {
+            selectionInvalidated = true;
+            selectionManager.selectedIndex = -1;
+        }
         selectionManager.updateVisualSelection();
     }
 
     // Display empty state
-    function displayEmptyState() {
+    function displayEmptyState(previousResults = currentResults) {
         if (disposed) return;
-        resultsContainer.innerHTML = '<div class="arcify-spotlight-empty">Start typing to search tabs, bookmarks, and history</div>';
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, [], 'new-tab', activeGroupName, input)) selectionInvalidated = true;
         currentResults = [];
         instantSuggestion = null;
         asyncSuggestions = [];
         selectionManager.updateResults([]);
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
     }
 
     // Create the base input handler once (with debouncing)

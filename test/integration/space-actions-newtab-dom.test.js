@@ -50,6 +50,16 @@ afterEach(() => { page?.dispose(); page = null; vi.restoreAllMocks(); vi.useReal
 async function open() { const { initializeSpotlight } = await import('../../newtab.js'); page = await initializeSpotlight(); await page.spaceActions.ready; await flush(); return page; }
 
 describe('real newtab Space action UI', () => {
+    it.each(['pin current tab', ''])('does not activate a replacement after the focused action disappears for %j', async query => {
+        initialResults = []; await open(); type(query); await flush();
+        rows()[0].focus(); scope = null; await page.spaceActions.prepare();
+        expect(document.activeElement).toBe(page.input); expect(page.input.value).toBe(query);
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        key('Enter'); expect(mutation).not.toHaveBeenCalled(); expect(requests('spotlightHandleResult')).toHaveLength(0);
+        scope = structuredClone(base); await page.spaceActions.prepare();
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        key('Enter'); expect(mutation).not.toHaveBeenCalled(); expect(requests('spotlightHandleResult')).toHaveLength(0);
+    });
     it('offers only folder/settings on helper context, preserves normal empty-query selection, and uses labeled decorative icons', async () => {
         scope.context.tab = null; await open();
         expect(rows().map(row => row.textContent)).toEqual([expect.stringContaining('Open Arcify settings'), expect.stringContaining('Create folder')]);

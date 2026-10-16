@@ -15,6 +15,7 @@
 import { SpotlightUtils } from './ui-utilities.js';
 import { ResultType } from './search-types.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
+import { resultIdentity } from './selection-manager.js';
 
 export const isActionResult = result => isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
@@ -108,20 +109,36 @@ export class SharedSpotlightLogic {
     }
 
     /**
-     * Update results display with incremental DOM updates
+     * Replace results without losing keyboard focus to a removed button.
      * @param {HTMLElement} resultsContainer - The results container element
      * @param {Array} currentResults - Current results array
      * @param {Array} newResults - New results to display
      * @param {string} mode - Spotlight mode
      * @param {string|null} activeGroupName - Active tab group name for Arcify context
+     * @param {HTMLElement|null} focusFallback - Safe input when the focused choice disappears
+     * @returns {boolean} Whether an owned, focused result disappeared or became ambiguous
      */
-    static updateResultsDisplay(resultsContainer, currentResults, newResults, mode, activeGroupName = null) {
-        // For now, we'll do a simple full update, but this can be optimized later for incremental updates
+    static updateResultsDisplay(resultsContainer, currentResults, newResults, mode, activeGroupName = null, focusFallback = null) {
+        const document = resultsContainer.ownerDocument;
+        const focused = document.activeElement;
+        // activeElement can retain a result after focus leaves an iframe/browser.
+        // Only restore focus that this live document and result list actually own.
+        const ownsFocus = document.hasFocus() && resultsContainer.contains(focused) &&
+            focused.matches('.arcify-spotlight-result-item');
+        const identity = ownsFocus ? resultIdentity(currentResults[Number(focused.dataset.index)]) : null;
+        const matches = identity === null ? [] : newResults.flatMap((result, index) => resultIdentity(result) === identity ? [index] : []);
+        const replacementIndex = matches.length === 1 ? matches[0] : -1;
         const html = SharedSpotlightLogic.generateResultsHTML(newResults, mode, activeGroupName);
         resultsContainer.innerHTML = html;
 
         // Setup favicon error handling for new images
         SpotlightUtils.setupFaviconErrorHandling(resultsContainer);
+        if (!ownsFocus) return false;
+        const target = replacementIndex < 0 ? focusFallback : resultsContainer.querySelector(`[data-index="${replacementIndex}"]`);
+        if (target?.isConnected && target.ownerDocument === document && !target.disabled && !target.closest('[inert], [hidden]')) {
+            target.focus({ preventScroll: true });
+        }
+        return replacementIndex < 0;
     }
 
     /**

@@ -512,6 +512,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Update the display with combined results
     function updateDisplay() {
         if (spotlightClosed) return;
+        const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
         if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
@@ -522,24 +523,30 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
-            displayEmptyState();
+            displayEmptyState(previousResults);
             return;
         }
 
         const mode = spotlightTabMode === SpotlightTabMode.NEW_TAB ? 'new-tab' : 'current-tab';
-        SharedSpotlightLogic.updateResultsDisplay(resultsContainer, [], currentResults, mode, activeGroupName);
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, currentResults, mode, activeGroupName, input)) {
+            // Tab focus also expresses an exact choice. If it disappears, a later
+            // Enter on the fallback input must not silently invoke another result.
+            selectionInvalidated = true;
+            selectionManager.selectedIndex = -1;
+        }
         selectionManager.updateVisualSelection();
     }
 
 
 
     // Display empty state
-    function displayEmptyState() {
-        resultsContainer.innerHTML = '<div class="arcify-spotlight-empty">Start typing to search tabs, bookmarks, and history</div>';
+    function displayEmptyState(previousResults = currentResults) {
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, [], spotlightTabMode, activeGroupName, input)) selectionInvalidated = true;
         currentResults = [];
         instantSuggestion = null;
         asyncSuggestions = [];
         selectionManager.updateResults([]);
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
     }
 
 
