@@ -208,6 +208,11 @@ export class SpotlightUtils {
         if (result.type === 'arcify-sidebar-command') {
             return { title: 'Open Arcify sidebar', subtitle: 'Arcify sidebar • This tab stays open', action: 'Open Sidebar' };
         }
+        if (result.metadata?.bookmarkFallback) {
+            const saved = result.metadata.bookmarkFallback;
+            return { title: result.title, subtitle: (result.metadata.savedBookmark ? 'Saved bookmarks: ' : 'Bookmarks: ') + saved.path,
+                action: saved.folder ? 'View Folder' : 'Open Bookmark URL' };
+        }
         const owner = result.metadata?.arcifyBridge;
         if (owner) {
             const action = owner.kind === 'space' ? 'Switch Workspace'

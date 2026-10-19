@@ -38,13 +38,15 @@ export class SharedSpotlightLogic {
         const combined = [];
 
         // Add instant suggestion first (if exists)
-        if (instantSuggestion) {
+        const bookmarkRepresentsInstant = instantSuggestion?.type === ResultType.URL_SUGGESTION &&
+            asyncSuggestions.some(result => result.metadata?.bookmarkFallback && result.url === instantSuggestion.url);
+        if (instantSuggestion && !bookmarkRepresentsInstant) {
             combined.push(instantSuggestion);
         }
 
         // Add async suggestions, filtering out duplicates of the instant suggestion
         for (const asyncResult of asyncSuggestions) {
-            const isDuplicate = !asyncResult.metadata?.arcifyBridge && instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
+            const isDuplicate = !asyncResult.metadata?.arcifyBridge && !asyncResult.metadata?.bookmarkFallback && instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
             if (!isDuplicate) {
                 combined.push(asyncResult);
             }

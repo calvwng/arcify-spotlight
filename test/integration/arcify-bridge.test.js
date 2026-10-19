@@ -250,3 +250,91 @@ describe('paired reverse launch', () => {
         expect(chromeMock.tabs.sendMessage).not.toHaveBeenCalled();
     });
 });
+
+describe('saved-bookmark fallback background lifecycle', () => {
+    const tree = () => [{ id: '0', children: [{ id: 'a', title: 'Arcify', children: [
+        { id: 's', title: 'Saved Work', children: [{ id: 'saved', title: 'Example saved', url: 'https://saved.test/' }] }
+    ] }] }];
+    const search = () => callInternal({ action: 'getLocalSuggestions', query: 'example', mode: 'new-tab' });
+    const select = row => callInternal({ action: 'spotlightHandleResult', result: row, mode: 'new-tab' });
+    it('discovers offline, reconnects authoritatively and rejects both kinds of stale choices', async () => {
+        let peer = '';
+        chromeMock.storage.local.get.mockImplementation(async () => ({ arcifyBridgePeerId: peer }));
+        chromeMock.bookmarks.getTree.mockResolvedValue(tree());
+        const standalone = await search();
+        const saved = standalone.results.find(row => row.metadata?.savedBookmark);
+        expect(saved.metadata.savedBookmark.id).toBe('saved');
+        expect(standalone.discoveryStatus).toContain('Standalone');
+        peer = peerId;
+        expect(await select(saved)).toMatchObject({ success: false });
+        const connected = await search();
+        expect(connected.results.some(row => row.metadata?.savedBookmark)).toBe(false);
+        const paired = connected.results.find(row => row.metadata?.arcifyBridge);
+        peer = '';
+        expect(await select(paired)).toMatchObject({ success: false });
+        const fresh = (await search()).results.find(row => row.metadata?.savedBookmark);
+        expect(await select(fresh)).toMatchObject({ success: true });
+        expect(chromeMock.tabs.create).toHaveBeenCalledExactlyOnceWith({ url: 'https://saved.test/' });
+    });
+    it.each(['UNAVAILABLE', 'TIMEOUT', 'UNAUTHORIZED'])('allows a fresh explicit ordinary selection during %s without paired mutation', async code => {
+        chromeMock.bookmarks.getTree.mockResolvedValue(tree());
+        chromeMock.runtime.sendMessage.mockImplementation((id, request, callback) => callback(respond(request, { ok:false, error:{ code, message:'Unavailable fixture' } })));
+        const response = await search();
+        expect(response.success).toBe(true);
+        expect(response.discoveryStatus).toContain('connection unavailable');
+        const saved = response.results.find(row => row.metadata?.savedBookmark);
+        expect(await select(saved)).toMatchObject({ success:true });
+        expect(chromeMock.tabs.create).toHaveBeenCalledExactlyOnceWith({ url:'https://saved.test/' });
+        chromeMock.tabs.create.mockClear();
+        chromeMock.storage.local.get.mockResolvedValue({});
+        expect(await select(saved)).toMatchObject({ success:false });
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        expect(chromeMock.tabs.update).not.toHaveBeenCalled();
+    });
+    it('rejects pairing changes during a tree read and refreshes imports/reorders without cached trees', async () => {
+        let peer = '';
+        chromeMock.storage.local.get.mockImplementation(async () => ({ arcifyBridgePeerId:peer }));
+        chromeMock.bookmarks.getTree.mockImplementationOnce(async () => { peer=peerId; return tree(); });
+        expect(await search()).toMatchObject({ success:false, results:[] });
+        peer=''; chromeMock.bookmarks.getTree.mockResolvedValue(tree());
+        const first = await search();
+        const changed = tree(); changed[0].children[0].children[0].children[0].title='Example imported';
+        chromeMock.bookmarks.getTree.mockResolvedValue(changed);
+        const second = await search();
+        expect(second.results.find(row => row.metadata?.savedBookmark).title).toBe('Example imported');
+        expect(await select(first.results.find(row => row.metadata?.savedBookmark))).toMatchObject({ success:false });
+    });
+});
+
+describe('explicit unavailable bookmark selection versus paired replay', () => {
+    it('never retries an uncertain paired mutation but permits a new fallback selection', async () => {
+        let offline=false; let mutations=0;
+        chromeMock.bookmarks.getTree.mockResolvedValue([{id:'root',children:[{id:'a',title:'Arcify',children:[{id:'saved',title:'Example saved',url:'https://saved.test/'}]}]}]);
+        chromeMock.runtime.sendMessage.mockImplementation((id,request,callback)=>{
+            if (!['hello','snapshot'].includes(request.command)) { mutations++; offline=true; callback(respond(request,{ok:false,error:{code:'TIMEOUT',message:'Uncertain paired result'}})); }
+            else callback(respond(request,offline?{ok:false,error:{code:'UNAVAILABLE',message:'Offline'}}:{}));
+        });
+        const search=()=>callInternal({action:'getLocalSuggestions',query:'example',mode:'new-tab'});
+        const select=row=>callInternal({action:'spotlightHandleResult',result:row,mode:'new-tab'});
+        const paired=(await search()).results.find(row=>row.metadata?.arcifyBridge?.kind==='bookmark');
+        expect(await select(paired)).toMatchObject({success:false,errorCode:'TIMEOUT'});
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+        const fallback=(await search()).results.find(row=>row.metadata?.bookmarkFallback);
+        expect(await select(fallback)).toMatchObject({success:true});
+        expect(mutations).toBe(1);
+        expect(chromeMock.tabs.create).toHaveBeenCalledExactlyOnceWith({url:'https://saved.test/'});
+    });
+    it('keeps ordinary bookmark fallback useful for ambiguous roots and rejects a recovered peer', async () => {
+        chromeMock.bookmarks.getTree.mockResolvedValue([{id:'a',title:'Arcify',children:[{id:'one',title:'Example ordinary',url:'https://ordinary.test/'}]},{id:'b',title:'Arcify',children:[]}]);
+        chromeMock.runtime.sendMessage.mockImplementation((id,request,callback)=>callback(respond(request,{ok:false,error:{code:'UNAVAILABLE',message:'Offline'}})));
+        const response=await callInternal({action:'getLocalSuggestions',query:'example',mode:'new-tab'});
+        const row=response.results.find(x=>x.metadata?.bookmarkFallback);
+        expect(row.metadata.savedBookmark).toBeUndefined();
+        expect(response.discoveryStatus).toContain('ambiguous');
+        expect(await callInternal({action:'spotlightHandleResult',result:row,mode:'new-tab'})).toMatchObject({success:true});
+        chromeMock.tabs.create.mockClear();
+        chromeMock.runtime.sendMessage.mockImplementation((id,request,callback)=>callback(respond(request)));
+        expect(await callInternal({action:'spotlightHandleResult',result:row,mode:'new-tab'})).toMatchObject({success:false,error:expect.stringContaining('reconnected')});
+        expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+    });
+});

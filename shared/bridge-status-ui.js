@@ -27,7 +27,14 @@ export function mountBridgeStatus(parent) {
     const showError = message => setError(message, true);
     // A passive suggestion refresh must not erase a failed action's recovery
     // guidance after its callback has already reported the concrete failure.
-    const unsubscribe = SpotlightMessageClient.onError((message, source) => setError(message, source === 'action'));
+    const unsubscribe = SpotlightMessageClient.onError((message, source) => {
+        if (source === 'discovery') {
+            if (actionError || disposed) return;
+            revision++;
+            label.textContent = message;
+            row.dataset.state = message.startsWith('Arcify paired:') ? 'connected' : 'bookmark-fallback';
+        } else setError(message, source === 'action');
+    });
     settings.addEventListener('click', async () => {
         try {
             const response = await chrome.runtime.sendMessage({ action: 'arcifyBridgeOpenSettings' });

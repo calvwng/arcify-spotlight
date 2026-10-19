@@ -13,7 +13,7 @@ Current matching runtime revisions and exact-head checks are recorded in
 companion PR. The four-finding regression fixes retain protocol v1; update both
 runtime builds to obtain all fixes. Documentation-only commits do not require a
 rebuild. See the [Arcify-side guide](https://github.com/calvwng/arcify/blob/integration/arcify-bridge-v1/docs/spotlight-bridge.md)
-for its storage model, and the [deferred backlog](BACKLOG.md) for bookmark-only ideas.
+for its storage model, and the [deferred backlog](BACKLOG.md) for fork follow-up work.
 
 ## Load, pair, and update
 
@@ -108,30 +108,18 @@ other folders and live tabs remain usable, without guessing a missing pin by URL
 
 ## What the bookmark folder can and cannot do alone
 
-The shared `Arcify` bookmark folder contains saved space/folder names and pinned
-link titles/URLs. Standalone Spotlight can read it without pairing, but its current
-folder fallback is **not complete workspace integration**:
+Standalone Spotlight now discovers saved links and folders directly from a unique
+`Arcify` bookmark tree, without Spotlight-local `spaces`. Results show saved paths
+and preserve distinct bookmark IDs. Folder selection opens one bookmark-manager
+page, never a workspace switch or a batch of tabs. Missing/ambiguous roots retain
+ordinary bookmark search with a visible limitation.
 
-- [`ArcifyProvider`](../shared/data-providers/arcify-provider.js) builds normalized
-  URL-to-folder metadata for existing search results. It uses the bookmark folder
-  ID as `spaceId`, not Arcify's stable space UUID. Color defaults to grey without
-  a matching `spaces` entry in Spotlight's own storage.
-- [`BackgroundDataProvider.getPinnedTabsData`](../shared/data-providers/background-data-provider.js)
-  additionally requires a name match in **Spotlight's own** `storage.local.spaces`;
-  it skips a space folder without one. Extension-local storage is not shared with
-  Arcify. Folder presence alone therefore does not guarantee complete saved-pin
-  enumeration. Ordinary bookmark/history/tab results may still expose those URLs.
-- The URL metadata cache and standalone result deduplication can collapse distinct
-  saved pins sharing a normalized URL. URL matching is not exact live-pin identity.
-- Standalone does not create the selectable `arcify-space` results supplied by the
-  [paired provider](../shared/data-providers/arcify-bridge-provider.js), including
-  empty-space switches. Native tab groups may supply labels, but do not reveal the
-  authoritative active space or live membership when group sync is off.
-
-Folder data could support a better saved-link fallback. That improvement is
-[explicitly deferred, not implemented (B-001)](BACKLOG.md#b-001-improve-bookmark-only-discovery-without-pairing).
-Even an improved fallback would lack Arcify's live per-window state and reliable
-workspace action routing. It would complement pairing rather than replace it.
+If the configured companion is unavailable, timed out or awaiting approval, read-only
+saved discovery remains available. A new explicit bookmark selection opens its revalidated URL ordinarily, without Space routing. If the peer has recovered, search again for paired results. Protocol/identity errors remain errors;
+paired actions never silently fall back to native navigation. Connected snapshots
+remain authoritative. See [the fallback guide](BOOKMARK-FALLBACK.md) for freshness,
+deduplication, folder behavior, validation and limits. Bookmarks never establish
+live Space selection, per-window membership or exact live-pin bindings.
 
 ## How the bridge works
 

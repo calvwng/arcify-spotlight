@@ -28,6 +28,7 @@ export class SpotlightMessageClient {
             const response = await chrome.runtime.sendMessage(message);
 
             if (response && response.success) {
+                if (response.discoveryStatus) this.reportError(response.discoveryStatus, 'discovery');
                 if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {
@@ -51,6 +52,7 @@ export class SpotlightMessageClient {
                 ...(bridgeRefresh ? { bridgeRefresh } : {})
             });
             if (response && response.success) {
+                if (response.discoveryStatus) this.reportError(response.discoveryStatus, 'discovery');
                 if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {
@@ -72,6 +74,7 @@ export class SpotlightMessageClient {
                 query: query.trim()
             });
             if (response && response.success) {
+                if (response.discoveryStatus) this.reportError(response.discoveryStatus, 'discovery');
                 if (response.warnings?.length) this.reportError(`Some pinned bookmarks are unavailable. ${response.warnings.map(warning => warning.message).join(' ')}`);
                 return response.results;
             } else {

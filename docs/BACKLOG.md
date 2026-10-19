@@ -1,13 +1,16 @@
 # Fork backlog
 
-These are deferred considerations for this fork, separate from the inherited
-[upstream roadmap](../.planning/ROADMAP.md). An entry is not an implemented feature,
+These are fork considerations with individual implementation status, separate from the inherited
+[upstream roadmap](../.planning/ROADMAP.md). An entry alone does not imply an implemented feature,
 a scheduled milestone, or a commitment to ship. See the [pairing guide](ARCIFY-BRIDGE.md)
 for current behavior.
 
 ## B-001: Improve bookmark-only discovery without pairing
 
-**Status: Deferred — not implemented.** Recorded 2026-10-12.
+**Status: Implemented for draft PR review; not released.** Recorded 2026-10-12.
+
+See [saved-bookmark fallback](BOOKMARK-FALLBACK.md) for behavior and limits.
+The original proposal below is retained as rationale.
 
 ### Why consider it?
 
@@ -56,4 +59,4 @@ These are review criteria for a future proposal, not promises of current behavio
 5. Paired mode keeps fresh snapshots, exact identities, window isolation, and
    fail-closed mutation routing. No shared workspace copy or automatic trust is added.
 
-No implementation, protocol change, or local rebuild is part of recording this item.
+The implementation adds no protocol changes or permissions. Installed builds remain unchanged until separately approved.

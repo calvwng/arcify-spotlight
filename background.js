@@ -9,6 +9,7 @@ import { WITNESS_CAPABILITY } from './shared/favorite-witness-protocol.js';
  */
 
 import { SearchEngine } from './shared/search-engine.js';
+import { SavedBookmarkProvider, validateSavedResult } from './shared/data-providers/saved-bookmark-provider.js';
 import { BackgroundDataProvider } from './shared/data-providers/background-data-provider.js';
 import { Logger } from './logger.js';
 import { getSettings } from './utils.js';
@@ -116,19 +117,38 @@ async function searchEngineForSender(message, sender) {
     const sourceTabId = sender.tab?.id ?? message.tabId;
     const helperTabId = isNewTabSender(sender) && Number.isSafeInteger(sourceTabId) && sourceTabId > 0 ? sourceTabId : null;
     if (!peerId) {
-        if (!helperTabId) return backgroundSearchEngine;
-        const provider = new BackgroundDataProvider({ excludeTabId: helperTabId, preserveTabIdentities: true });
+        const provider = new SavedBookmarkProvider({ excludeTabId: helperTabId, preserveTabIdentities: Boolean(helperTabId) });
+        provider.discoveryPeerId = peerId;
         provider.autocompleteProvider = backgroundDataProvider.autocompleteProvider;
         return new SearchEngine(provider);
     }
     const context = await bridgeContext(message, sender);
     assertRefreshScope(message, peerId, context.windowId);
-    const snapshot = await arcifyBridge.snapshot(context.windowId, peerId);
+    let snapshot;
+    try { snapshot = await arcifyBridge.snapshot(context.windowId, peerId); }
+    catch (error) {
+        if (message.bridgeRefresh || !['UNAVAILABLE', 'TIMEOUT', 'UNAUTHORIZED'].includes(error.code) || await arcifyBridge.getPeerId() !== peerId) throw error;
+        const provider = new SavedBookmarkProvider({ excludeTabId: helperTabId, preserveTabIdentities: Boolean(helperTabId), unavailable: true });
+        provider.discoveryPeerId = peerId;
+        provider.autocompleteProvider = backgroundDataProvider.autocompleteProvider;
+        return new SearchEngine(provider);
+    }
     if (!snapshot) throw new Error('Arcify was disconnected. Search again.');
     // The exact calling helper is already visible. Other same-URL/title tabs are
     // independent choices and remain searchable. Never guess from the active tab.
     const excludeTabId = helperTabId ? context.tabId : null;
     return new SearchEngine(new ArcifyBridgeProvider(snapshot, backgroundDataProvider, peerId, { excludeTabId }));
+}
+
+async function searchResponse(engine, message, sender, results) {
+    const provider = engine.dataProvider;
+    const discoveryStatus = provider.discoveryStatus ? await provider.discoveryStatus()
+        : provider.snapshot ? 'Arcify paired: live workspace results.' : null;
+    if (provider.discoveryStatus && await arcifyBridge.getPeerId() !== provider.discoveryPeerId)
+        throw new Error('Arcify connection changed. Search again.');
+    await validateCompletedRefresh(message, sender);
+    return { success: true, results, ...(discoveryStatus ? { discoveryStatus } : {}),
+        ...(provider.snapshot?.warnings?.length ? { warnings: provider.snapshot.warnings } : {}) };
 }
 
 // A logical invalidation remains paired throughout its entire fresh read. A
@@ -661,8 +681,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const results = await engine.getSpotlightSuggestionsImmediate(
                     query, message.mode
                 );
-                await validateCompletedRefresh(message, sender);
-                sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
+                sendResponse(await searchResponse(engine, message, sender, results));
             } catch (error) {
                 Logger.error('[Background] Error getting spotlight suggestions:', error);
                 sendResponse({ success: false, error: error.message, results: [] });
@@ -677,8 +696,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const results = await engine.getLocalSuggestionsImmediate(
                     query, message.mode
                 );
-                await validateCompletedRefresh(message, sender);
-                sendResponse({ success: true, results: results, ...(engine.dataProvider.snapshot?.warnings?.length ? { warnings: engine.dataProvider.snapshot.warnings } : {}) });
+                sendResponse(await searchResponse(engine, message, sender, results));
             } catch (error) {
                 Logger.error('[Background] Error getting local suggestions:', error);
                 sendResponse({ success: false, error: error.message, results: [] });
@@ -708,8 +726,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
                 const tabId = (sender.tab && sender.tab.id) ? sender.tab.id : message.tabId;
                 const peerId = await arcifyBridge.getPeerId();
+                const saved = message.result.metadata?.bookmarkFallback;
+                if (saved && peerId) {
+                    // A new explicit fallback selection is ordinary navigation. Never
+                    // enter this branch after a failed paired action or replay one here.
+                    const context = await bridgeContext(message, sender);
+                    let available = false;
+                    try { available = Boolean(await arcifyBridge.snapshot(context.windowId, peerId)); }
+                    catch (error) {
+                        if (!['UNAVAILABLE', 'TIMEOUT', 'UNAUTHORIZED'].includes(error.code)) throw error;
+                    }
+                    if (available) throw new Error('Arcify reconnected. Search again for paired results.');
+                }
+                await validateSavedResult(message.result, peerId);
+                if (saved && await arcifyBridge.getPeerId() !== peerId)
+                    throw new Error('Arcify connection changed. Search again.');
                 if (!peerId && message.result.metadata?.arcifyBridge) throw new Error('Arcify was disconnected. Search again before selecting this result.');
-                if (peerId) {
+                if (peerId && !saved) {
                     const context = await bridgeContext(message, sender);
                     // The extension helper is a launcher, so new navigation belongs to Arcify's
                     // newly active space rather than the helper's previous membership.

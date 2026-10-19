@@ -245,3 +245,20 @@ function mount(response = Promise.resolve({success:true,status:{status:'connecte
     });
 
 });
+
+describe('bookmark fallback status transitions', () => {
+    it('replaces fallback status on reconnect without clearing explicit action errors', async () => {
+        const parent=document.createElement('main');
+        chrome.runtime.sendMessage.mockResolvedValue({ success:true, status:{status:'disabled'} });
+        const surface=mountBridgeStatus(parent);
+        await Promise.resolve();
+        SpotlightMessageClient.reportError('Saved-bookmark fallback (ready).', 'discovery');
+        expect(parent.querySelector('.arcify-bridge-status').dataset.state).toBe('bookmark-fallback');
+        SpotlightMessageClient.reportError('Arcify paired: live workspace results.', 'discovery');
+        expect(parent.querySelector('.arcify-bridge-status').dataset.state).toBe('connected');
+        surface.showError('Selection failed. Search again.');
+        SpotlightMessageClient.reportError('Saved-bookmark fallback (ready).', 'discovery');
+        expect(parent.querySelector('[role=status]').textContent).toBe('Selection failed. Search again.');
+        surface.dispose();
+    });
+});
