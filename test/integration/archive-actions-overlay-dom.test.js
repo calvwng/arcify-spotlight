@@ -75,6 +75,12 @@ describe('Archive in the isolated overlay document', () => {
         fire(input(), 'keydown'); fire(input(), 'keydown'); await flush();
         expect(mutations()).toHaveLength(1); expect(mutations()[0].entryId).toBe('entry-b'); expect(navigation()).toHaveLength(0);
         expect(frame().querySelector('[role="status"]').textContent).toBe('Archived tab reopened in Home.');
+        const { SpotlightMessageClient } = await import('../../shared/message-client.js');
+        SpotlightMessageClient.reportError('Arcify paired: live workspace results.','discovery'); await flush();
+        expect(frame().querySelector('[role="status"]').textContent).toBe('Archived tab reopened in Home.');
+        type('next query');
+        expect(frame().querySelector('[role="status"]').textContent).toBe('Arcify paired: live workspace results.');
+        expect(mutations()).toHaveLength(1);
     });
     it('rejects synthetic page keyboard and click events', async () => {
         await open(); type('open archive'); input().dispatchEvent(new (frame().defaultView.KeyboardEvent)('keydown', { key: 'Enter', bubbles: true })); rows()[0].click(); await flush();

@@ -337,7 +337,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     markOverlayHost(host, chrome.runtime.id);
     const input = content.querySelector('.arcify-spotlight-input');
     const resultsContainer = content.querySelector('.arcify-spotlight-results');
-    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement, { input });
     let actionPending = false;
     let sidebarCommand;
     let spaceActions;

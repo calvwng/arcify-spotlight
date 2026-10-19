@@ -65,6 +65,12 @@ describe('tab actions in the actual isolated overlay document', () => {
         await open(); const original = host(); type('duplicate tab'); fire(input(), 'keydown'); fire(input(), 'keydown'); await flush();
         expect(mutations()).toHaveLength(1); expect(navigation()).toHaveLength(0);
         expect(host()).toBe(original); expect(shell().open).toBe(true); expect(frame().querySelector('[role="status"]').textContent).toContain('duplicated');
+        const { SpotlightMessageClient } = await import('../../shared/message-client.js');
+        SpotlightMessageClient.reportError('Arcify paired: live workspace results.','discovery'); await flush();
+        expect(frame().querySelector('[role="status"]').textContent).toBe('Tab duplicated in Today.');
+        type('next query');
+        expect(frame().querySelector('[role="status"]').textContent).toBe('Arcify paired: live workspace results.');
+        expect(mutations()).toHaveLength(1);
     });
     it('contains rename Escape inside the inner prompt and restores the original search draft', async () => {
         await open(); type('rename tab'); fire(input(), 'keydown'); const original = host(), name = prompt().querySelector('[data-tab-action-input]'); name.value = 'Draft';

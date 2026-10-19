@@ -63,3 +63,15 @@ Design choice for review: folder selection opens the browser's bookmark manager.
 No input is required to review this version; a future in-Spotlight folder drilldown
 would be a separate UX change. A configured unavailable connection permits discovery
 and permits explicit ordinary bookmark URL navigation without changing workspace authority.
+
+## Action completion and discovery status
+
+Passive paired/fallback discovery refreshes cache their latest status without
+replacing a confirmed action completion. Completion stays visible until the next
+query input; URL previews and passive refreshes do not dismiss it or change focus.
+The next query restores the latest passive status, avoiding lasting success clutter.
+Explicit action errors retain their recovery guidance across discovery and input.
+A later explicit outcome replaces an earlier one. Passive failures can still
+replace a confirmed success so current failures remain visible. Delayed initial
+connection checks are cached beneath completion without overwriting newer discovery.
+This is UI feedback only; mutation receipts, action routing and retries are unchanged.

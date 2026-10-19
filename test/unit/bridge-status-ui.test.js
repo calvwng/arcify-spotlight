@@ -262,3 +262,63 @@ describe('bookmark fallback status transitions', () => {
         surface.dispose();
     });
 });
+
+describe('action completion versus passive discovery', () => {
+    let surface, parent, input, runtime;
+    const label = () => parent.querySelector('[role="status"]');
+    const discovery = message => SpotlightMessageClient.reportError(message, 'discovery');
+    beforeEach(() => {
+        parent=document.createElement('main'); input=document.createElement('input');
+        parent.append(input); document.body.append(parent);
+        runtime={sendMessage:vi.fn().mockResolvedValue(statusResponse('connected','Connected.'))};
+        vi.stubGlobal('chrome',{runtime});
+    });
+    afterEach(() => { surface?.dispose(); parent.remove(); vi.unstubAllGlobals(); });
+    it.each(['Arcify paired: live workspace results.','Saved-bookmark fallback (ready).'])('preserves completion through delayed %s until new query input', async message => {
+        surface=mountBridgeStatus(parent,{input}); await flushMessages();
+        input.value='original query'; input.focus(); input.setSelectionRange(3,6);
+        surface.showSuccess('Archived tab reopened in Home.');
+        discovery(message); await flushMessages();
+        expect(label().textContent).toBe('Archived tab reopened in Home.');
+        expect(document.activeElement).toBe(input); expect([input.selectionStart,input.selectionEnd]).toEqual([3,6]);
+        input.value='URL preview'; input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown'}));
+        expect(label().textContent).toBe('Archived tab reopened in Home.');
+        input.value='new query'; input.dispatchEvent(new Event('input'));
+        expect(label().textContent).toBe(message);
+        expect(document.activeElement).toBe(input);
+        discovery('Arcify paired: newer results.');
+        expect(label().textContent).toBe('Arcify paired: newer results.');
+    });
+    it.each(['resolve','reject'])('caches late initial status %s under completion for the next query', async outcome => {
+        const initial=deferred(); runtime.sendMessage.mockReturnValueOnce(initial.promise);
+        surface=mountBridgeStatus(parent,{input}); surface.showSuccess('Folder created in the selected Space.');
+        if(outcome==='resolve') initial.resolve(statusResponse('connected','Fresh connection.'));
+        else initial.reject(new Error('Initial check failed'));
+        await flushMessages(); expect(label().textContent).toBe('Folder created in the selected Space.');
+        input.dispatchEvent(new Event('input'));
+        expect(label().textContent).toBe(outcome==='resolve'?'Fresh connection.':'Could not check the Arcify connection.');
+    });
+    it('does not restore stale initial status over newer discovery after completion', async () => {
+        const initial=deferred(); runtime.sendMessage.mockReturnValueOnce(initial.promise);
+        surface=mountBridgeStatus(parent,{input}); surface.showSuccess('Saved pin renamed.');
+        discovery('Saved-bookmark fallback (missing).');
+        initial.resolve(statusResponse('connected','Older connection.')); await flushMessages();
+        expect(label().textContent).toBe('Saved pin renamed.'); input.dispatchEvent(new Event('input'));
+        expect(label().textContent).toBe('Saved-bookmark fallback (missing).');
+    });
+    it('keeps explicit errors through discovery and further input; later success has its own lifetime', async () => {
+        surface=mountBridgeStatus(parent,{input}); await flushMessages();
+        surface.showSuccess('Previous action finished.'); surface.showError('Uncertain result. Check your tabs.');
+        discovery('Arcify paired: live workspace results.'); input.dispatchEvent(new Event('input'));
+        expect(label().textContent).toBe('Uncertain result. Check your tabs.');
+        surface.showSuccess('New action finished.'); discovery('Saved-bookmark fallback (ready).');
+        expect(label().textContent).toBe('New action finished.'); input.dispatchEvent(new Event('input'));
+        expect(label().textContent).toBe('Saved-bookmark fallback (ready).');
+    });
+    it('removes the input listener on disposal', async () => {
+        surface=mountBridgeStatus(parent,{input}); await flushMessages();
+        surface.showSuccess('Completed.'); const oldLabel=label(); surface.dispose();
+        input.dispatchEvent(new Event('input')); discovery('late discovery');
+        expect(oldLabel.textContent).toBe('Completed.');
+    });
+});

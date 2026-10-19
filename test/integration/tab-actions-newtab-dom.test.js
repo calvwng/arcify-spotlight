@@ -113,7 +113,14 @@ describe('tabActionsV1 in the real new-tab renderer', () => {
     it.each(['duplicate tab', 'copy link', 'mute tab'])('executes %s once and keeps the current surface and navigation untouched', async query => {
         await open(); type(query); key('Enter'); key('Enter'); await page.tabActions.operation;
         expect(mutation).toHaveBeenCalledTimes(1); expect(requests('spotlightHandleResult')).toHaveLength(0); expect(window.close).not.toHaveBeenCalled();
-        expect(document.querySelector('[role="status"]').textContent.length).toBeGreaterThan(0);
+        const completion={ 'duplicate tab':'Tab duplicated in Today.', 'copy link':'Current link copied.', 'mute tab':'Current tab muted.' }[query];
+        expect(document.querySelector('[role="status"]').textContent).toBe(completion);
+        const { SpotlightMessageClient } = await import('../../shared/message-client.js');
+        SpotlightMessageClient.reportError('Arcify paired: live workspace results.','discovery'); await flush();
+        expect(document.querySelector('[role="status"]').textContent).toBe(completion);
+        type('next query');
+        expect(document.querySelector('[role="status"]').textContent).toBe('Arcify paired: live workspace results.');
+        expect(mutation).toHaveBeenCalledTimes(1);
     });
     it('changes mute intent from captured state and never lets mute text unmute an already-muted tab', async () => {
         scope.context.tab.muted = true; await open(); type('unmute tab'); expect(selectedCommand()).toBe('setCurrentTabMuted');

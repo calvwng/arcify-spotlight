@@ -55,6 +55,14 @@ describe('Archive in real new-tab renderer', () => {
         await open(); type('same archived title'); expect(rows()).toHaveLength(2); expect(rows().map(row => row.dataset.archiveEntryId)).toEqual(['entry-a', 'entry-b']);
         key('ArrowDown'); expect(page.selectionManager.getSelectedResult().metadata.archiveAction.entryId).toBe('entry-b'); expect(page.input.value).toBe('same archived title'); key('Enter'); await page.archiveActions.operation;
         expect(mutation).toHaveBeenCalledOnce(); expect(mutation.mock.calls[0][0].entryId).toBe('entry-b'); expect(document.querySelector('[role="status"]').textContent).toBe('Archived tab reopened in Home.');
+        const { SpotlightMessageClient } = await import('../../shared/message-client.js');
+        page.input.focus(); const selected=page.selectionManager.getSelectedResult();
+        SpotlightMessageClient.reportError('Arcify paired: live workspace results.','discovery'); await flush();
+        expect(document.querySelector('[role="status"]').textContent).toBe('Archived tab reopened in Home.');
+        expect(document.activeElement).toBe(page.input); expect(page.selectionManager.getSelectedResult()).toBe(selected);
+        type('next query');
+        expect(document.querySelector('[role="status"]').textContent).toBe('Arcify paired: live workspace results.');
+        expect(mutation).toHaveBeenCalledOnce();
         expect(calls('spotlightHandleResult')).toHaveLength(0); expect(window.close).not.toHaveBeenCalled();
     });
     it('never lets synthetic row clicks replace manual web-search selection', async () => {

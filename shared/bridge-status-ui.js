@@ -1,7 +1,7 @@
 /** Small shared connection/error surface used by overlay and new-tab. */
 import { SpotlightMessageClient } from './message-client.js';
 
-export function mountBridgeStatus(parent) {
+export function mountBridgeStatus(parent, { input } = {}) {
     const row = document.createElement('div');
     row.className = 'arcify-bridge-status';
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 12px;font:12px/1.4 system-ui,sans-serif;color:inherit;opacity:.8;';
@@ -16,12 +16,25 @@ export function mountBridgeStatus(parent) {
     row.append(label, settings);
     parent.append(row);
     let disposed = false;
-    let revision = 0;
+    let passiveRevision = 0;
     let actionError = false;
+    let actionSuccess = false;
+    let passiveStatus = { message: 'Checking Arcify connection.', state: 'checking' };
+    const render = ({ message, state }) => {
+        if (!disposed) { label.textContent = message; row.dataset.state = state; }
+    };
+    const clearSuccess = () => {
+        if (disposed || !actionSuccess) return;
+        actionSuccess = false;
+        render(passiveStatus);
+    };
+    // Only a new query dismisses completion. URL previews do not emit input.
+    input?.addEventListener('input', clearSuccess);
     const setError = (message, explicit) => {
+        if (!explicit) { passiveRevision++; passiveStatus = { message, state: 'error' }; }
         if (!explicit && actionError) return;
         actionError = explicit;
-        revision++;
+        actionSuccess = false;
         if (!disposed) { label.textContent = message; row.dataset.state = 'error'; }
     };
     const showError = message => setError(message, true);
@@ -29,10 +42,10 @@ export function mountBridgeStatus(parent) {
     // guidance after its callback has already reported the concrete failure.
     const unsubscribe = SpotlightMessageClient.onError((message, source) => {
         if (source === 'discovery') {
-            if (actionError || disposed) return;
-            revision++;
-            label.textContent = message;
-            row.dataset.state = message.startsWith('Arcify paired:') ? 'connected' : 'bookmark-fallback';
+            if (disposed) return;
+            passiveRevision++;
+            passiveStatus = { message, state: message.startsWith('Arcify paired:') ? 'connected' : 'bookmark-fallback' };
+            if (!actionError && !actionSuccess) render(passiveStatus);
         } else setError(message, source === 'action');
     });
     settings.addEventListener('click', async () => {
@@ -43,14 +56,20 @@ export function mountBridgeStatus(parent) {
         catch { showError('Could not open connection settings. Open Spotlight details in chrome://extensions.'); }
     });
     label.textContent = 'Checking Arcify connection…';
-    const startRevision = revision;
+    const initialPassiveRevision = passiveRevision;
+    const finishInitialStatus = status => {
+        if (disposed || passiveRevision !== initialPassiveRevision) return;
+        passiveStatus = status;
+        passiveRevision++;
+        if (!actionError && !actionSuccess) render(passiveStatus);
+    };
     chrome.runtime.sendMessage({ action: 'arcifyBridgeStatus' }).then(response => {
-        if (disposed || revision !== startRevision) return;
-        if (!response?.success) { setError(response?.error || 'Could not check the Arcify connection.', false); return; }
-        row.dataset.state = response.status.status;
-        label.textContent = response.status.status === 'disabled' ? 'Standalone Spotlight' : response.status.message;
-    }).catch(() => {
-        if (!disposed && revision === startRevision) setError('Could not check the Arcify connection.', false);
-    });
-    return { showError, showSuccess(message) { actionError = false; revision++; if (!disposed) { label.textContent = message; row.dataset.state = 'connected'; } }, dispose() { disposed = true; unsubscribe(); row.remove(); } };
+        if (!response?.success || !response.status) {
+            finishInitialStatus({ state: 'error', message: response?.error || 'Could not check the Arcify connection.' });
+            return;
+        }
+        finishInitialStatus({ state: response.status.status,
+            message: response.status.status === 'disabled' ? 'Standalone Spotlight' : response.status.message });
+    }).catch(() => finishInitialStatus({ state: 'error', message: 'Could not check the Arcify connection.' }));
+    return { showError, showSuccess(message) { actionError = false; actionSuccess = true; if (!disposed) { label.textContent = message; row.dataset.state = 'connected'; } }, dispose() { disposed = true; input?.removeEventListener('input', clearSuccess); unsubscribe(); row.remove(); } };
 }

@@ -293,7 +293,7 @@ export async function initializeSpotlight() {
     // Get references to key elements
     const input = container.querySelector('.arcify-spotlight-input');
     const resultsContainer = container.querySelector('.arcify-spotlight-results');
-    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement);
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement, { input });
     let actionPending = false;
     let disposed = false;
     let initialResultsReady = false;
