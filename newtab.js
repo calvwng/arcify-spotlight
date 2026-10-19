@@ -1,3 +1,4 @@
+import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
  * New Tab Spotlight - Standalone spotlight page for new tab override
  * 
@@ -299,6 +300,7 @@ export async function initializeSpotlight() {
     let initialResultsReady = false;
     let manuallySelected = false;
     let selectionInvalidated = false;
+    const archiveDefaultRefresh = new ArchiveDefaultRefresh();
     let startupSuggestion;
     let sidebarCommand;
     let spaceActions;
@@ -328,6 +330,7 @@ export async function initializeSpotlight() {
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
         selectionInvalidated = false;
+        archiveDefaultRefresh.reset();
         manuallySelected = true;
         startupSuggestion?.cancel();
         if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) return;
@@ -481,10 +484,19 @@ export async function initializeSpotlight() {
         if (disposed) return;
         const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
+        const refreshingArchiveDefault = archiveDefaultRefresh.capture(previous, archiveActions, {
+            query: typedQuery, manual: manuallySelected, invalidated: selectionInvalidated,
+            focusedResult: resultsContainer.contains(selectionManager.getActiveElement())
+        });
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) && !refreshingArchiveDefault || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
         if (!manuallySelected && !typedQuery && !startupSuggestion?.selected && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        const archiveSelection = archiveDefaultRefresh.resolve(currentResults, archiveActions);
+        if (archiveSelection) {
+            selectionManager.selectedIndex = archiveSelection.index;
+            if (archiveSelection.invalidated) selectionInvalidated = true;
+        }
         // A failed/revoked command or removed tab must not expose another action to
         // held Enter or a later async refresh. Fresh input/navigation can select again.
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
@@ -522,6 +534,7 @@ export async function initializeSpotlight() {
 
     // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
+        archiveDefaultRefresh.reset();
         selectionInvalidated = false;
         manuallySelected = false;
         startupSuggestion.cancel();

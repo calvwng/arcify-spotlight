@@ -35,10 +35,10 @@ function validateSpaceNames(value, scope) {
 export class ArchiveActionController {
     constructor({ api = chrome, tabId, newTab = false, onChange = () => {}, showError = () => {}, showSuccess = () => {}, timeoutMs = 10000 } = {}) {
         Object.assign(this, { api, tabId, newTab, onChange, showError, showSuccess, timeoutMs });
-        this.revision = 0; this.readRevision = 0; this.scope = null; this.spaceNames = new Map(); this.disposed = false; this.pending = false;
+        this.revision = 0; this.readRevision = 0; this.scope = null; this.spaceNames = new Map(); this.disposed = false; this.pending = false; this.refreshing = false;
         this.onStorage = (changes, area) => {
             if (area !== 'local' || ![PEER_KEY, PAIRING_GENERATION_KEY].some(key => Object.hasOwn(changes, key))) return;
-            this.revision++; this.readRevision++; this.scope = null; this.spaceNames.clear(); this.onChange();
+            this.revision++; this.readRevision++; this.refreshing = false; this.scope = null; this.spaceNames.clear(); this.onChange();
             this.ready = this.prepare();
         };
         api.storage.onChanged.addListener(this.onStorage);
@@ -55,7 +55,7 @@ export class ArchiveActionController {
         if (this.disposed || this.pending) return;
         const revision = this.revision, readRevision = ++this.readRevision;
         // Requesting a view rotates private Arcify tokens. Retire the old view first.
-        this.scope = null; this.spaceNames.clear(); this.onChange();
+        this.refreshing = true; this.scope = null; this.spaceNames.clear(); this.onChange();
         try {
             if (this.newTab && !this.tabId) {
                 const tab = await this.api.tabs.getCurrent();
@@ -70,7 +70,7 @@ export class ArchiveActionController {
             this.scope = scope;
         } catch {
             if (!this.disposed && revision === this.revision && readRevision === this.readRevision) this.scope = null;
-        } finally { if (!this.disposed && revision === this.revision && readRevision === this.readRevision) this.onChange(); }
+        } finally { if (!this.disposed && revision === this.revision && readRevision === this.readRevision) { this.refreshing = false; this.onChange(); } }
     }
     results(query = '') {
         if (!this.scope || this.disposed || this.pending || !query.trim()) return [];
@@ -100,7 +100,7 @@ export class ArchiveActionController {
         if (!trustedActionGesture(event) || this.disposed || this.pending) return true;
         if (!this.matches(result)) { this.showError('The Archive context changed. Refresh Spotlight and choose the action again.'); return true; }
         const action = result.metadata.archiveAction, revision = this.revision;
-        this.pending = true; this.readRevision++; this.scope = null;
+        this.refreshing = false; this.pending = true; this.readRevision++; this.scope = null;
         if (action.command === 'openArchive') this.open(action, revision);
         else this.operation = this.reopen(action, revision);
         this.onChange();
@@ -151,7 +151,7 @@ export class ArchiveActionController {
         }
     }
     dispose() {
-        this.disposed = true; this.revision++; this.readRevision++; this.scope = null; clearTimeout(this.timer);
+        this.refreshing = false; this.disposed = true; this.revision++; this.readRevision++; this.scope = null; clearTimeout(this.timer);
         try { this.api.storage.onChanged.removeListener(this.onStorage); } catch { /* Reloaded extension. */ }
     }
 }

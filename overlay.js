@@ -1,3 +1,4 @@
+import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
  * Spotlight Overlay - Content script implementation of command bar interface
  * 
@@ -346,6 +347,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let splitActions;
     let manuallySelected = false;
     let selectionInvalidated = false;
+    const archiveDefaultRefresh = new ArchiveDefaultRefresh();
     let spotlightClosed = false;
     let removalTimer = null;
     let prefillTimer = null;
@@ -371,6 +373,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
         selectionInvalidated = false;
+        archiveDefaultRefresh.reset();
         manuallySelected = true;
         if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
@@ -524,10 +527,19 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         if (spotlightClosed) return;
         const previousResults = currentResults;
         const previous = selectionManager.getSelectedResult();
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
+        const refreshingArchiveDefault = archiveDefaultRefresh.capture(previous, archiveActions, {
+            query: typedQuery, manual: manuallySelected, invalidated: selectionInvalidated,
+            focusedResult: resultsContainer.contains(selectionManager.getActiveElement())
+        });
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) && !refreshingArchiveDefault || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
         if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        const archiveSelection = archiveDefaultRefresh.resolve(currentResults, archiveActions);
+        if (archiveSelection) {
+            selectionManager.selectedIndex = archiveSelection.index;
+            if (archiveSelection.invalidated) selectionInvalidated = true;
+        }
         // A failed/revoked command or removed tab must not expose another action to
         // held Enter or a later async refresh. Fresh input/navigation can select again.
         if (selectionInvalidated) selectionManager.selectedIndex = -1;
@@ -569,6 +581,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
+        archiveDefaultRefresh.reset();
         selectionInvalidated = false;
         manuallySelected = false;
         // Programmatic .value previews do not fire input; every input event is a query change.

@@ -97,3 +97,46 @@ describe('Archive in the isolated overlay document', () => {
         expect(chromeMock.runtime.sendMessage.mock.calls.filter(([message]) => typeof message === 'string')).toHaveLength(1);
     });
 });
+
+describe('Archive passive focus refresh in overlay', () => {
+    it('restores untouched Open Archive default after the latest token arrives, without retyping', async () => {
+        Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+        await open(); type('open archive');
+        expect(rows()[0].classList.contains('selected')).toBe(true);
+        const send=chromeMock.runtime.sendMessage.getMockImplementation();let finish;
+        chromeMock.runtime.sendMessage.mockImplementation((...args)=>{
+            if(args[0]?.action==='spotlightLiveTabContext')return Promise.resolve({success:true,sourceTabId:9,windowId:2,peerId:PEER});
+            if(args[0]?.action==='arcifyArchiveContext')return new Promise(resolve=>{finish=resolve;});
+            return send(...args);
+        });
+        window.dispatchEvent(new Event('focus')); await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));
+        expect(frame().querySelector('.arcify-spotlight-result-item.selected')).toBeNull();
+        fire(input(),'keydown');expect(nativeRequest).toBeNull();
+        const fresh=clone(scope);fresh.viewId='focus-view';fresh.openIntent='focus-intent';
+        finish({success:true,scope:fresh,spaceNames:clone(spaceNames)});
+        await vi.waitFor(()=>expect(rows()[0]?.classList.contains('selected')).toBe(true));
+        expect(input().value).toBe('open archive');fire(input(),'keydown',{repeat:true});expect(nativeRequest).toBeNull();
+        fire(input(),'keydown');expect(nativeRequest?.token).toBe('focus-intent');ack();await flush();
+        expect(navigation()).toHaveLength(0);expect(mutations()).toHaveLength(0);
+    });
+});
+
+describe('focused Archive row retirement in overlay', () => {
+    it('does not restore a focused exact row after passive token rotation', async () => {
+        Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+        await open();type('open archive');rows()[0].focus();
+        expect(frame().activeElement).toBe(rows()[0]);
+        const send=chromeMock.runtime.sendMessage.getMockImplementation();let finish;
+        chromeMock.runtime.sendMessage.mockImplementation((...args)=>{
+            if(args[0]?.action==='spotlightLiveTabContext')return Promise.resolve({success:true,sourceTabId:9,windowId:2,peerId:PEER});
+            if(args[0]?.action==='arcifyArchiveContext')return new Promise(resolve=>{finish=resolve;});
+            return send(...args);
+        });
+        window.dispatchEvent(new Event('focus'));await vi.waitFor(()=>expect(finish).toBeTypeOf('function'));
+        const fresh=clone(scope);fresh.viewId='focused-view';fresh.openIntent='focused-intent';
+        finish({success:true,scope:fresh,spaceNames:clone(spaceNames)});
+        await vi.waitFor(()=>expect(rows()).toHaveLength(1));
+        expect(frame().querySelector('.arcify-spotlight-result-item.selected')).toBeNull();
+        fire(input(),'keydown');expect(nativeRequest).toBeNull();expect(navigation()).toHaveLength(0);
+    });
+});

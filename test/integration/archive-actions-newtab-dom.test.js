@@ -84,3 +84,53 @@ describe('Archive in real new-tab renderer', () => {
         expect(document.querySelector('[role="status"]').textContent).not.toBe('Arcify Archive opened.');
     });
 });
+
+describe('Archive automatic default during passive refresh', () => {
+    it('suspends Open Archive while its token rotates and restores the same automatic action with the fresh token', async () => {
+        await open(); type('open archive'); page.input.focus();
+        expect(page.selectionManager.getSelectedResult()?.metadata.archiveAction.command).toBe('openArchive');
+        const send=chromeMock.runtime.sendMessage.getMockImplementation(); let finish;
+        chromeMock.runtime.sendMessage.mockImplementation((...args)=>args[0]?.action==='arcifyArchiveContext'
+            ? new Promise(resolve=>{finish=resolve;}) : send(...args));
+        const refresh=page.archiveActions.prepare();
+        expect(page.selectionManager.getSelectedResult()).toBeNull(); key('Enter'); expect(externalRequest).toBeUndefined();
+        scope.viewId='view-2'; scope.openIntent='intent-2'; finish({success:true,scope:clone(scope),spaceNames:clone(spaceNames)});
+        await refresh;
+        expect(page.selectionManager.getSelectedResult()?.metadata.archiveAction.command).toBe('openArchive');
+        expect(page.selectionManager.getSelectedResult()?.metadata.archiveAction.scope.openIntent).toBe('intent-2');
+        expect(page.input.value).toBe('open archive'); expect(document.activeElement).toBe(page.input);
+        key('Enter',{repeat:true}); expect(externalRequest).toBeUndefined();
+        key('Enter'); expect(externalRequest?.token).toBe('intent-2'); ack(); await page.archiveActions.operation;
+        key('Enter',{repeat:true}); expect(calls('spotlightHandleResult')).toHaveLength(0);
+    });
+});
+
+describe('Archive refresh safety boundaries', () => {
+    it.each(['failed','changed-space','revoked','manual','focused','after-invocation'])('keeps %s selection invalidated after refreshed rows arrive', async kind => {
+        await open(); type('open archive');
+        if(kind==='manual') key('ArrowUp');
+        if(kind==='focused') rows()[0].focus();
+        if(kind==='after-invocation') { key('Enter'); ack(); await page.archiveActions.operation; }
+        if(kind==='changed-space') scope.context.spaceId='home';
+        if(kind==='revoked') storageListeners.forEach(listener=>listener({arcifyBridgePairingGeneration:{newValue:'revoked'}},'local'));
+        if(kind==='failed') scope=null;
+        await page.archiveActions.prepare();
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        const count=calls('spotlightHandleResult').length;
+        const nativeCount=chromeMock.runtime.sendMessage.mock.calls.filter(([target])=>typeof target==='string').length;
+        key('Enter',{repeat:true}); key('Enter');
+        expect(calls('spotlightHandleResult')).toHaveLength(count);
+        expect(chromeMock.runtime.sendMessage.mock.calls.filter(([target])=>typeof target==='string')).toHaveLength(nativeCount);
+        expect(mutation).not.toHaveBeenCalled();
+        if(kind!=='after-invocation')expect(externalRequest).toBeUndefined();
+    });
+    it('keeps overlapping passive reads empty until the latest fresh scope wins', async () => {
+        await open();type('open archive');const send=chromeMock.runtime.sendMessage.getMockImplementation(), finishes=[];
+        chromeMock.runtime.sendMessage.mockImplementation((...args)=>args[0]?.action==='arcifyArchiveContext'?new Promise(resolve=>finishes.push(resolve)):send(...args));
+        const first=page.archiveActions.prepare(),second=page.archiveActions.prepare();
+        const stale=clone(scope);stale.openIntent='stale-intent';finishes[0]({success:true,scope:stale,spaceNames:clone(spaceNames)});await first;
+        expect(page.selectionManager.getSelectedResult()).toBeNull();
+        const fresh=clone(scope);fresh.viewId='fresh-view';fresh.openIntent='latest-intent';finishes[1]({success:true,scope:fresh,spaceNames:clone(spaceNames)});await second;
+        expect(page.selectionManager.getSelectedResult()?.metadata.archiveAction.scope.openIntent).toBe('latest-intent');
+    });
+});
