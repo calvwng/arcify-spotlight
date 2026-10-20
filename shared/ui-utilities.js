@@ -1,3 +1,8 @@
+import { TRANSIENT_ACTION_DEFINITION } from './arcify-transient-actions-ui.js';
+import { SPLIT_ACTION_DEFINITIONS } from './arcify-split-actions-ui.js';
+import { archiveActionDefinition } from './arcify-archive-actions-ui.js';
+import { tabActionDefinition } from './arcify-tab-actions-ui.js';
+import { ACTION_DEFINITIONS } from './arcify-space-actions-ui.js';
 /**
  * UI Utilities - Shared spotlight UI functions and formatting
  * 
@@ -101,11 +106,11 @@ export class SpotlightUtils {
         }
     }
 
-    // Escape HTML utility (consolidated from overlay.js and popup.js)
+    // Escape both text and quoted HTML attributes; textContent serialization alone
+    // leaves quotes unescaped and is unsafe inside generated title attributes.
     static escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        return String(text ?? '').replace(/[&<>"']/g, character => entities[character]);
     }
 
     // Extract website name from URL for better display
@@ -136,6 +141,34 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
+        if (['arcify-space-action', 'arcify-tab-action', 'arcify-archive-action', 'arcify-split-action', 'arcify-transient-action'].includes(result.type)) {
+            const icon = result.type === 'arcify-transient-action' ? 'window' : result.type === 'arcify-split-action' ? 'split' : result.type === 'arcify-archive-action' ? 'archive' : result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
+            const paths = {
+                window: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M6 7h1m2 0h1"/>',
+                split: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>',
+                archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v13h14V8M9 12h6"/>',
+                rename: '<path d="m4 17 11-11 3 3-11 11H4Zm10-10 3 3M4 22h16"/>',
+                link: '<path d="m10 14 4-4M9 17l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m3-1 2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0"/>',
+                duplicate: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+                mute: '<path d="M4 9h4l5-4v14l-5-4H4Zm13 0 5 6m0-6-5 6"/>',
+                space: '<rect x="3" y="4" width="7" height="16" rx="1"/><path d="M13 12h8m-3-3 3 3-3 3"/>',
+                move: '<path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M7 14h10m-3-3 3 3-3 3"/>',
+                settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="7"/>',
+                folder: '<path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M12 10v7m-3-3h6"/>',
+                pin: '<path d="m9 3 6 0-1 6 4 4H6l4-4Zm3 10v8"/>',
+                remove: '<path d="M4 7h16M9 7V3h6v4M6 7l1 14h10l1-14M10 10v7m4-7v7"/>'
+            };
+            return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[icon] || paths.settings}</svg>`)}`;
+        }
+        if (result.type === 'arcify-sidebar-command') {
+            // SVGs loaded through <img> cannot inherit the row's currentColor.
+            // This neutral has at least 3.5:1 contrast on both the current
+            // #2d2d2d surface and white, without depending on host-page theme.
+            return `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>')}`;
+        }
+        if (result.type === ResultType.SAVED_FAVORITE) {
+            return `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#858585" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.5 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9Z"/></svg>')}`;
+        }
         if (result.favicon && result.favicon.startsWith('http')) {
             return result.favicon;
         }
@@ -167,6 +200,31 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'arcify-transient-action') return { ...TRANSIENT_ACTION_DEFINITION, subtitle: `${TRANSIENT_ACTION_DEFINITION.subtitle} • ${result.metadata?.transientAction?.url || ''}` };
+        if (result.type === 'arcify-split-action') return SPLIT_ACTION_DEFINITIONS[result.metadata?.splitAction?.command] || { title: 'Unavailable Split action', subtitle: '', action: '' };
+        if (result.type === 'arcify-archive-action') return archiveActionDefinition(result);
+        if (result.type === 'arcify-tab-action') return tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context) || { title: 'Unavailable tab action', subtitle: '', action: '' };
+        if (result.type === 'arcify-space-action') {
+            const definition = ACTION_DEFINITIONS[result.metadata?.spaceAction?.command];
+            return definition || { title: 'Unavailable Arcify action', subtitle: '', action: '' };
+        }
+        if (result.type === 'arcify-sidebar-command') {
+            return { title: 'Open Arcify sidebar', subtitle: 'Arcify sidebar • This tab stays open', action: 'Open Sidebar' };
+        }
+        if (result.metadata?.bookmarkFallback) {
+            const saved = result.metadata.bookmarkFallback;
+            return { title: result.title, subtitle: (result.metadata.savedBookmark ? 'Saved bookmarks: ' : 'Bookmarks: ') + saved.path,
+                action: saved.folder ? 'View Folder' : 'Open Bookmark URL' };
+        }
+        const owner = result.metadata?.arcifyBridge;
+        if (owner) {
+            const action = owner.kind === 'space' ? 'Switch Workspace'
+                : owner.kind === 'bookmark' ? 'Open Pinned Tab'
+                : owner.kind === 'favorite' ? (result.metadata.tabId ? 'Switch to Favorite' : 'Open Favorite') : 'Switch to Tab';
+            return { title: result.title, subtitle: owner.kind === 'space' ? 'Arcify workspace'
+                : owner.kind === 'favorite' ? `Saved Favorite • ${result.domain || result.url}` : result.domain, action };
+        }
+
         const formatters = {
             [ResultType.URL_SUGGESTION]: {
                 title: result.title,
@@ -194,7 +252,7 @@ export class SpotlightUtils {
             [ResultType.PINNED_TAB]: {
                 title: result.title,
                 subtitle: result.domain,
-                action: 'Open Favorite Tab'
+                action: 'Open Pinned Tab'
             },
             [ResultType.BOOKMARK]: {
                 title: result.title,
@@ -338,18 +396,17 @@ export class SpotlightUtils {
         return chipColorMap[colorName] || chipColorMap.grey;
     }
 
-    // Generate space chip HTML -- only renders when tab is in a Chrome tab group
+    // Bridge results use authoritative workspace metadata, including closed pins.
+    // Standalone results keep the existing Chrome tab-group presentation.
     static generateSpaceChipHTML(result) {
         const groupName = result.metadata?.groupName;
         const spaceName = result.metadata?.spaceName;
+        const isBridge = Boolean(result.metadata?.arcifyBridge);
 
-        // No tab group = no chip (even if Arcify space exists)
-        if (!groupName) return '';
-
-        // If tab's group matches Arcify space, use Arcify name (canonical).
-        // If different or no Arcify space, use actual tab group name.
-        const chipName = (spaceName && spaceName === groupName) ? spaceName : groupName;
-        const chipColor = result.metadata?.groupColor || 'grey';
+        const chipName = isBridge ? spaceName
+            : (spaceName && spaceName === groupName) ? spaceName : groupName;
+        if (typeof chipName !== 'string' || !chipName) return '';
+        const chipColor = (isBridge ? result.metadata?.spaceColor : result.metadata?.groupColor) || 'grey';
         const chipColors = SpotlightUtils.getChipColors(chipColor);
         const truncatedName = chipName.length > 18 ? chipName.substring(0, 18) + '\u2026' : chipName;
 

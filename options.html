@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arcify Spotlight · Settings</title>
+    <meta name="color-scheme" content="light dark">
+    <script src="shared/options-appearance.js"></script>
+    <link rel="icon" href="assets/icon.png" type="image/png">
+    <link rel="stylesheet" href="options.css">
+</head>
+<body>
+    <main class="settings">
+        <header>
+            <p class="eyebrow">Arcify Spotlight</p>
+            <h1>Connect to Arcify</h1>
+            <p>Pair Spotlight with your Arcify sidebar to search its spaces and saved tabs.</p>
+        </header>
+
+        <section class="card" aria-labelledby="appearance-heading">
+            <h2 id="appearance-heading">Appearance</h2>
+            <label for="options-appearance">Options page theme</label>
+            <select id="options-appearance" aria-describedby="appearance-help">
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+            </select>
+            <p id="appearance-help" class="hint">System follows your device’s light or dark setting automatically. Your choice is saved for this options page.</p>
+            <p id="appearance-message" class="hint" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="card" aria-labelledby="pairing-heading">
+            <h2 id="pairing-heading">Pair both extensions</h2>
+            <p>Each extension must save the other’s ID. You can start on either side; both saves are needed before the connection is ready.</p>
+            <ol class="instructions">
+                <li>Open <strong>chrome://extensions</strong> and enable Developer mode to see extension IDs.</li>
+                <li>Copy the ID for <strong>Arcify</strong>, paste it below, and select <strong>Save Arcify ID</strong>. <strong>Awaiting Arcify approval</strong> means this save worked and pairing still needs the next step.</li>
+                <li>Copy <strong>this Spotlight extension ID</strong> below. Open Arcify’s connection settings, paste it into the Spotlight extension ID field, and save it there too.</li>
+                <li>Return here and select <strong>Refresh status</strong>. Once both IDs are saved correctly, the status should be <strong>Connected</strong>.</li>
+            </ol>
+            <p class="hint">Unpacked extensions can have different IDs when loaded from different folders. Check both IDs again if you move either extension.</p>
+            <label for="spotlight-extension-id">This Spotlight extension ID</label>
+            <div class="copy-id-row">
+                <input id="spotlight-extension-id" class="extension-id" type="text" readonly spellcheck="false" aria-describedby="own-id-help">
+                <button id="copy-spotlight-id" class="secondary" type="button">Copy Spotlight ID</button>
+            </div>
+            <p id="own-id-help" class="hint">Save this ID in Arcify’s connection settings, even if you already saved Arcify’s ID here.</p>
+            <p id="copy-id-message" class="hint" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="card" aria-labelledby="connection-heading">
+            <h2 id="connection-heading">Connection</h2>
+            <form id="bridge-settings-form" novalidate>
+                <label for="arcify-peer-id">Arcify extension ID</label>
+                <input id="arcify-peer-id" class="extension-id" name="peerId" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="peer-id-help">
+                <p id="peer-id-help" class="hint">Use the 32-letter ID shown for Arcify. Saving also checks the connection; you can finish pairing on the other side afterward. Leave this empty to disable the connection.</p>
+                <p id="saved-peer-id" class="hint saved-peer-id" aria-live="polite">Checking saved Arcify ID…</p>
+                <div class="actions">
+                    <button id="save-connection" type="submit">Save Arcify ID</button>
+                    <button id="disconnect-connection" class="secondary" type="button">Disconnect</button>
+                    <button id="refresh-connection" class="secondary" type="button">Refresh status</button>
+                </div>
+            </form>
+            <div id="connection-status" class="connection-status" role="status" aria-live="polite" aria-atomic="true" data-state="disabled">
+                <strong id="connection-status-label">Disabled</strong>
+                <p id="connection-status-message">The connection is disabled until you pair both extensions.</p>
+            </div>
+            <p class="hint">Pairing is optional and disabled by default. Your chosen ID is stored locally in this browser. Disconnecting stops Spotlight from requesting Arcify data; you can also clear the Spotlight ID in Arcify’s settings.</p>
+        </section>
+    </main>
+    <script type="module" src="options.js"></script>
+</body>
+</html>

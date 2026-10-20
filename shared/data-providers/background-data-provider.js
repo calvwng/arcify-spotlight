@@ -9,8 +9,10 @@ import { FuseSearchService } from '../fuse-search-service.js';
 const TAB_ACTIVITY_STORAGE_KEY = 'tabLastActivity';
 
 export class BackgroundDataProvider extends BaseDataProvider {
-    constructor() {
+    constructor({ excludeTabId = null, preserveTabIdentities = false } = {}) {
         super();
+        this.excludeTabId = excludeTabId;
+        this.preserveTabIdentities = preserveTabIdentities;
         this.autocompleteProvider = new AutocompleteProvider();
         // Mark this as a background provider for reliable detection in minified builds
         this.isBackgroundProvider = true;
@@ -32,7 +34,7 @@ export class BackgroundDataProvider extends BaseDataProvider {
             }
 
             // Filter out tabs without required fields
-            const validTabs = tabs.filter(tab => tab.title && tab.url);
+            const validTabs = tabs.filter(tab => tab.title && tab.url && tab.id !== this.excludeTabId);
 
             // No query = return all valid tabs
             if (!query) {
@@ -70,6 +72,24 @@ export class BackgroundDataProvider extends BaseDataProvider {
             Logger.error('[BackgroundDataProvider] Error querying tabs:', error);
             return [];
         }
+    }
+
+    deduplicateResults(results) {
+        // Only a request-scoped standalone helper enables this exception. Its
+        // remaining real tabs are separate destinations, even at an identical URL.
+        // Ordinary overlay/native result deduplication keeps its existing behavior.
+        if (!this.preserveTabIdentities) return super.deduplicateResults(results);
+        const live = new Map();
+        const ordinary = [];
+        for (const result of results) {
+            const id = result.metadata?.tabId;
+            if (['open-tab', 'pinned-tab'].includes(result.type) && Number.isSafeInteger(id) && id > 0) {
+                if (id === this.excludeTabId) continue;
+                if (!live.has(id) || this.getResultPriority(result) > this.getResultPriority(live.get(id))) live.set(id, result);
+            } else ordinary.push(result);
+        }
+        const urls = new Set([...live.values()].map(result => this.normalizeUrlForDeduplication(result.url)));
+        return [...live.values(), ...super.deduplicateResults(ordinary.filter(result => !result.url || !urls.has(this.normalizeUrlForDeduplication(result.url))))];
     }
 
     async getRecentTabsData(limit = 5) {
