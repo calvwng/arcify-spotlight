@@ -1,3 +1,4 @@
+import { isTransientActionResult } from './arcify-transient-actions-protocol.js';
 /**
  * Shared Component Logic - Common functionality between overlay.js and popup.js
  * 
@@ -20,7 +21,7 @@ import { isTabActionResult } from './arcify-tab-actions-protocol.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 import { resultIdentity } from './selection-manager.js';
 
-export const isActionResult = result => isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
@@ -53,6 +54,12 @@ export class SharedSpotlightLogic {
         }
 
         combined.push(...actions);
+        // A complete URL keeps its normal primary action. Little Arc is an
+        // explicit secondary choice, ahead of unrelated async suggestions.
+        if (instantSuggestion?.type === ResultType.URL_SUGGESTION && combined[0] === instantSuggestion && combined.some(isTransientActionResult)) {
+            return [instantSuggestion, ...combined.filter(isTransientActionResult),
+                ...combined.slice(1).filter(result => !isTransientActionResult(result))];
+        }
 
         // Commands are matched before reaching this renderer. Promote only these
         // explicit action types, keeping web search and all navigation results.

@@ -1,3 +1,4 @@
+import { TransientActionController, isTransientActionResult } from './shared/arcify-transient-actions-ui.js';
 import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
  * Spotlight Overlay - Content script implementation of command bar interface
@@ -345,6 +346,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     let tabActions;
     let archiveActions;
     let splitActions;
+    let transientActions;
     let manuallySelected = false;
     let selectionInvalidated = false;
     const archiveDefaultRefresh = new ArchiveDefaultRefresh();
@@ -375,7 +377,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         selectionInvalidated = false;
         archiveDefaultRefresh.reset();
         manuallySelected = true;
-        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) return;
+        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result) || isTransientActionResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -397,16 +399,18 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     splitActions = new SplitActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    transientActions = new TransientActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     const liveResults = mountLiveTabResults({
         isActive: () => !spotlightClosed,
         onInvalidate: removedTabIds => {
             searchQueryId++;
             splitActions.invalidate();
+            transientActions.invalidate();
             if (isTabResultRemoved(selectionManager.getSelectedResult(), removedTabIds)) selectionInvalidated = true;
             asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
             updateDisplay();
         },
-        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); archiveActions.ready = archiveActions.prepare(); splitActions.ready = splitActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
+        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); archiveActions.ready = archiveActions.prepare(); splitActions.ready = splitActions.prepare(); transientActions.ready = transientActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
     });
 
     // Load initial results
@@ -518,7 +522,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || [])], query: typedQuery
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery
         });
     }
 
@@ -531,10 +535,10 @@ async function activateSpotlightNow(spotlightTabMode, options) {
             query: typedQuery, manual: manuallySelected, invalidated: selectionInvalidated,
             focusedResult: resultsContainer.contains(selectionManager.getActiveElement())
         });
-        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) && !refreshingArchiveDefault || isSplitActionResult(previous) && !splitActions?.matches(previous)) selectionInvalidated = true;
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) && !refreshingArchiveDefault || isSplitActionResult(previous) && !splitActions?.matches(previous) || isTransientActionResult(previous) && !transientActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
         selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
-        if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        if (!manuallySelected && !typedQuery && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]) || isTransientActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
         const archiveSelection = archiveDefaultRefresh.resolve(currentResults, archiveActions);
         if (archiveSelection) {
             selectionManager.selectedIndex = archiveSelection.index;
@@ -590,12 +594,13 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Handle result selection
     async function handleResultAction(result, event) {
-        if (spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending) return;
+        if (spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;
         if (archiveActions.invoke(result, event)) return;
         if (splitActions.invoke(result, event)) return;
+        if (transientActions.invoke(result, event)) return;
         if (!result) {
             Logger.error('[Spotlight] No result provided');
             return;
@@ -636,7 +641,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
         (result, index, event) => {
-            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result)) && event?.isTrusted !== true) return;
+            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result) || isTransientActionResult(result)) && event?.isTrusted !== true) return;
             selectionInvalidated = false;
             manuallySelected = true;
             selectionManager.selectedIndex = index;
@@ -655,7 +660,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         // Invalidated extension APIs may throw during cleanup. Still retire all
         // DOM/timer ownership; never notify a new worker about the old surface.
         for (const cleanup of [removeGlobalCloseListener, removeFocusContainment,
-            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(), () => archiveActions.dispose(), () => splitActions.dispose(),
+            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(), () => archiveActions.dispose(), () => splitActions.dispose(), () => transientActions.dispose(),
             () => liveResults.dispose(), () => bridgeStatus.dispose(), () => dialog.close()]) {
             try { cleanup(); } catch (error) { Logger.log('Overlay cleanup after invalidation:', error); }
         }

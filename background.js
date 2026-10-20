@@ -1,3 +1,4 @@
+import { installArcifyTransientActionMessages } from './shared/arcify-transient-actions.js';
 import { installFavoriteWitness } from './shared/favorite-witness.js';
 import { WITNESS_CAPABILITY } from './shared/favorite-witness-protocol.js';
 /**
@@ -39,6 +40,9 @@ installArcifyTabActionMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
 });
 installArcifyArchiveMessages(chrome, arcifyBridge, {
+    verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
+});
+installArcifyTransientActionMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
 });
 

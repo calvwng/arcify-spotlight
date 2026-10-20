@@ -1,3 +1,4 @@
+import { TRANSIENT_ACTION_DEFINITION } from './arcify-transient-actions-ui.js';
 import { SPLIT_ACTION_DEFINITIONS } from './arcify-split-actions-ui.js';
 import { archiveActionDefinition } from './arcify-archive-actions-ui.js';
 import { tabActionDefinition } from './arcify-tab-actions-ui.js';
@@ -140,9 +141,10 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
-        if (['arcify-space-action', 'arcify-tab-action', 'arcify-archive-action', 'arcify-split-action'].includes(result.type)) {
-            const icon = result.type === 'arcify-split-action' ? 'split' : result.type === 'arcify-archive-action' ? 'archive' : result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
+        if (['arcify-space-action', 'arcify-tab-action', 'arcify-archive-action', 'arcify-split-action', 'arcify-transient-action'].includes(result.type)) {
+            const icon = result.type === 'arcify-transient-action' ? 'window' : result.type === 'arcify-split-action' ? 'split' : result.type === 'arcify-archive-action' ? 'archive' : result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
             const paths = {
+                window: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M6 7h1m2 0h1"/>',
                 split: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>',
                 archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v13h14V8M9 12h6"/>',
                 rename: '<path d="m4 17 11-11 3 3-11 11H4Zm10-10 3 3M4 22h16"/>',
@@ -198,6 +200,7 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'arcify-transient-action') return { ...TRANSIENT_ACTION_DEFINITION, subtitle: `${TRANSIENT_ACTION_DEFINITION.subtitle} • ${result.metadata?.transientAction?.url || ''}` };
         if (result.type === 'arcify-split-action') return SPLIT_ACTION_DEFINITIONS[result.metadata?.splitAction?.command] || { title: 'Unavailable Split action', subtitle: '', action: '' };
         if (result.type === 'arcify-archive-action') return archiveActionDefinition(result);
         if (result.type === 'arcify-tab-action') return tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context) || { title: 'Unavailable tab action', subtitle: '', action: '' };

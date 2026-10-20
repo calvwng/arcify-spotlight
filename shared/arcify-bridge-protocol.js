@@ -26,9 +26,18 @@ export function isFavoriteUrl(value) {
     try { return ['http:', 'https:'].includes(new URL(value).protocol); }
     catch { return false; }
 }
+// Little Arc accepts a complete HTTP(S) address only; never infer a scheme or
+// allow URL parser repair (whitespace, backslashes, credentials, or https:host).
+export function isTransientUrl(value) {
+    if (typeof value !== 'string' || value.length > 8192 || !/^https?:\/\/[^/]/i.test(value) || /[\s\\\x00-\x1f\x7f]/.test(value)) return false;
+    try {
+        const url = new URL(value);
+        return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password;
+    } catch { return false; }
+}
 const commandFields = {
     hello: [], snapshot: [], invalidate: [], activateSpace: ['spaceId'], activateTab: ['tabId'],
-    openTab: ['url', 'spaceId'], navigateTab: ['tabId', 'url'],
+    openTransient: ['url'], openTab: ['url', 'spaceId'], navigateTab: ['tabId', 'url'],
     openBookmark: ['spaceId', 'bookmarkId'], openFavorite: ['favoriteId'], launch: ['mode'], startupSuggestion: ['tabId']
 };
 export function validateRequest(message, commands) {
@@ -47,6 +56,7 @@ export function validateRequest(message, commands) {
         || message.command === 'openTab' && message.spaceId !== undefined && !isId(message.spaceId)
         || ['activateTab', 'navigateTab', 'startupSuggestion'].includes(message.command) && !isTabId(message.tabId)
         || ['openTab', 'navigateTab'].includes(message.command) && !isSafeUrl(message.url)
+        || message.command === 'openTransient' && !isTransientUrl(message.url)
         || message.command === 'openBookmark' && !isId(message.bookmarkId)
         || message.command === 'openFavorite' && !isId(message.favoriteId)
         || message.command === 'launch' && !['current-tab', 'new-tab'].includes(message.mode))
