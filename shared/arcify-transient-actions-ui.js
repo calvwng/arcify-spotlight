@@ -5,8 +5,16 @@ import { TRANSIENT_ACTION_TYPE, TRANSIENT_UNKNOWN, isTransientActionResult, exac
 export { isTransientActionResult };
 export const TRANSIENT_ACTION_DEFINITION = { title: 'Open link in Little Arc', subtitle: 'After restart: no control tab → ordinary tabs', action: 'Open Little Arc', icon: 'window' };
 export function transientUrlFromQuery(query = '') {
-    const text = query.trim(), url = text.replace(/^little\s+arc\s+/i, '');
-    return isTransientUrl(url) ? url : null;
+    const text=query.trim(), explicit=/^little\s+arc\s+/i.test(text), url=text.replace(/^little\s+arc\s+/i,'');
+    if(isTransientUrl(url))return url;
+    // Only the explicit command accepts conservative public-style DNS names.
+    // No search inference, ports, local hosts, IP literals, credentials or repair.
+    if(!explicit || /[\s\\\x00-\x1f\x7f]/.test(url))return null;
+    const host=url.split(/[/?#]/)[0];
+    if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host))return null;
+    const normalized=`https://${url}`;
+    try { if(new URL(normalized).hostname!==host.toLowerCase())return null; } catch{return null;}
+    return isTransientUrl(normalized)?normalized:null;
 }
 export class TransientActionController {
     constructor({ api = chrome, tabId, newTab = false, onChange = () => {}, showError = () => {}, showSuccess = () => {}, timeoutMs = 35000 }) {

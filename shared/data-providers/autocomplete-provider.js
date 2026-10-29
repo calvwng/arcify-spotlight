@@ -17,6 +17,7 @@ import { websiteNameExtractor } from '../website-name-extractor.js';
 import { getAutocompleteScore } from '../scoring-constants.js';
 import { SpotlightUtils } from '../ui-utilities.js';
 import { Logger } from '../../logger.js';
+import { isBrowserPageInput } from '../browser-page-url.js';
 
 export class AutocompleteProvider {
     constructor() {
@@ -30,7 +31,7 @@ export class AutocompleteProvider {
     async getAutocompleteSuggestions(query) {
         const trimmedQuery = query.trim();
         
-        if (!trimmedQuery || trimmedQuery.length < 2) {
+        if (!trimmedQuery || trimmedQuery.length < 2 || isBrowserPageInput(trimmedQuery)) {
             return [];
         }
 

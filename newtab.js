@@ -439,7 +439,7 @@ export async function initializeSpotlight() {
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
     async function handleAsyncSearch(bridgeRefresh) {
-        if (disposed) return;
+        if (disposed || actionPending) return;
         const query = typedQuery;
         const queryId = ++searchQueryId;
 
@@ -479,7 +479,7 @@ export async function initializeSpotlight() {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery,
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery,
             preferredAction: startupSuggestion?.selected ? command : null
         });
     }
@@ -549,7 +549,8 @@ export async function initializeSpotlight() {
 
     // Handle result selection
     async function handleResultAction(result, event) {
-        if (spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
+        if (actionPending || bridgeStatus.settingsActions.pending || spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
+        if (bridgeStatus.settingsActions.invoke(result, event)) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;
@@ -567,6 +568,8 @@ export async function initializeSpotlight() {
             // For other results, use 'current-tab' mode to navigate this page
             if (actionPending) return;
             actionPending = true;
+            baseInputHandler.cancel();
+            searchQueryId++; // Freeze this choice; discard in-flight ranking.
             const isTabSwitch = (result.type === 'open-tab' || result.type === 'pinned-tab' || Boolean(result.metadata?.arcifyBridge));
             const mode = isTabSwitch ? 'new-tab' : 'current-tab';
             const response = await handleResultActionViaMessage(result, mode);

@@ -257,3 +257,13 @@ describe('Space picker in the actual newtab document', () => {
         expect(document.querySelector('[role="status"]').textContent).toContain('did not confirm'); expect(window.close).not.toHaveBeenCalled();
     });
 });
+
+describe('local Spotlight settings in production New Tab',()=>{
+ it.each(['Spotlight settings','connection settings','pairing'])('opens existing options route unpaired for %s',async query=>{
+  scope=null;chromeMock.storage.local.get.mockResolvedValue({});await open();type(query);await flush();
+  expect(page.resultsContainer.querySelectorAll('[data-result-type="spotlight-settings-action"]')).toHaveLength(1);
+  expect(page.selectionManager.getSelectedResult().type).toBe('spotlight-settings-action');key('Enter');await flush();
+  expect(requests('arcifyBridgeOpenSettings')).toHaveLength(1);expect(requests('spotlightHandleResult')).toHaveLength(0);expect(mutation).not.toHaveBeenCalled();
+ });
+ it('paired settings has one Spotlight action plus distinct Arcify action',async()=>{await open();type('settings');await flush();expect(page.resultsContainer.querySelectorAll('[data-result-type="spotlight-settings-action"]')).toHaveLength(1);expect(rows().filter(r=>r.textContent.includes('Open Arcify settings'))).toHaveLength(1);type('Arcify settings');expect(page.resultsContainer.querySelector('[data-result-type="spotlight-settings-action"]')).toBeNull();});
+});

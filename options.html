@@ -13,8 +13,8 @@
     <main class="settings">
         <header>
             <p class="eyebrow">Arcify Spotlight</p>
-            <h1>Connect to Arcify</h1>
-            <p>Pair Spotlight with your Arcify sidebar to search its spaces and saved tabs.</p>
+            <h1>Spotlight settings</h1>
+            <p>Choose appearance and link behavior, and optionally connect Spotlight to your Arcify sidebar.</p>
         </header>
 
         <section class="card" aria-labelledby="appearance-heading">
@@ -27,6 +27,16 @@
             </select>
             <p id="appearance-help" class="hint">System follows your device’s light or dark setting automatically. Your choice is saved for this options page.</p>
             <p id="appearance-message" class="hint" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="card" aria-labelledby="peek-heading">
+            <h2 id="peek-heading">Shift-click links</h2>
+            <label><input type="checkbox" id="peek-enabled"> Open Shift-clicked web links in Little Arc</label>
+            <p class="hint">Off by default. Pair both extensions, then Shift-click an ordinary link in the main webpage. Little Arc opens one real browser page; its header can move that same page into a Space. Sidebar selection keeps its existing behavior.</p>
+            <label><input type="checkbox" id="peek-iframe-enabled"> Use iframe Peek instead (experimental)</label>
+            <p class="hint">Optional Peek previews can be blocked by websites or sign-in requirements. Its explicit Little Arc fallback remains available. Opening actions use the verified current preview URL, or the original link when unavailable; form entries, JavaScript state and history are not transferred.</p>
+            <p class="hint">Subframe links, named targets and pages that intercept clicks may need the Little Arc context menu. A webpage can cover or interfere with embedded controls. No security headers are bypassed.</p>
+            <p id="peek-options-status" class="hint" role="status" aria-live="polite"></p>
         </section>
 
         <section class="card" aria-labelledby="pairing-heading">

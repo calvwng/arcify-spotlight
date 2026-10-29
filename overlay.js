@@ -1,3 +1,7 @@
+import { isRoutedUrlSubmission } from './shared/routed-open-source.js';
+import { trustedActionGesture } from './shared/arcify-space-actions-ui.js';
+import { installPeekContent } from './shared/peek-content.js';
+import { installLittleArcHeaderContent } from './shared/little-arc-header-content.js';
 import { TransientActionController, isTransientActionResult } from './shared/arcify-transient-actions-ui.js';
 import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
@@ -477,7 +481,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
     async function handleAsyncSearch(bridgeRefresh) {
-        if (spotlightClosed) return;
+        if (spotlightClosed || actionPending) return;
         const query = typedQuery;
         const queryId = ++searchQueryId;
 
@@ -522,7 +526,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery
         });
     }
 
@@ -594,7 +598,9 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
     // Handle result selection
     async function handleResultAction(result, event) {
-        if (spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
+        if (isRoutedUrlSubmission(result, spotlightTabMode) && !trustedActionGesture(event)) return;
+        if (actionPending || bridgeStatus.settingsActions.pending || spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
+        if (bridgeStatus.settingsActions.invoke(result, event)) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;
@@ -611,6 +617,8 @@ async function activateSpotlightNow(spotlightTabMode, options) {
 
             if (actionPending) return;
             actionPending = true;
+            baseInputHandler.cancel();
+            searchQueryId++; // Freeze this choice; discard in-flight ranking.
             // Keep errors visible and avoid repeated Enter/clicks while an action is pending.
             const response = await handleResultActionViaMessage(result, mode);
             if (response.success) closeSpotlight();
@@ -655,6 +663,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function closeSpotlight(invalidated = false) {
         if (spotlightClosed) return;
         spotlightClosed = true;
+        baseInputHandler.cancel();
         searchQueryId++;
         clearTimeout(prefillTimer);
         // Invalidated extension APIs may throw during cleanup. Still retire all
@@ -768,3 +777,6 @@ overlayReceiver = installOverlayReceiver({
     activate: activateSpotlight,
     disposeInvalidated: () => activeOverlay?.dispose(true)
 });
+
+installLittleArcHeaderContent();
+installPeekContent();

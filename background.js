@@ -1,3 +1,6 @@
+import { createRoutedSourceCapture, installRoutedSourceValidation } from './shared/routed-open-source.js';
+import { installPeekBroker } from './shared/peek-broker.js';
+import { installLittleArcHeaderBroker } from './shared/little-arc-header-broker.js';
 import { installArcifyTransientActionMessages } from './shared/arcify-transient-actions.js';
 import { installFavoriteWitness } from './shared/favorite-witness.js';
 import { WITNESS_CAPABILITY } from './shared/favorite-witness-protocol.js';
@@ -30,8 +33,12 @@ import { createActiveNewTabReuse, isBrowserNewTabAlias, isSameActiveTab } from '
 import { boundedOverlayDelivery, captureOverlayCommand, installOverlayRecoveryValidation, isMissingOverlayReceiver, recoverOverlayReceiver } from './shared/overlay-recovery.js';
 
 installFavoriteWitness(chrome, arcifyBridge.favoriteWitness);
+installLittleArcHeaderBroker(chrome);
+installPeekBroker(chrome);
 installArcifySplitActionMessages(chrome, arcifyBridge);
 const activeNewTabReuse = createActiveNewTabReuse(chrome);
+const captureRoutedSource = createRoutedSourceCapture(chrome);
+installRoutedSourceValidation(chrome, arcifyBridge, captureRoutedSource);
 installOverlayRecoveryValidation(chrome);
 installArcifySpaceActionMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
@@ -722,6 +729,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         })();
         return true;
     } else if (message.action === 'spotlightHandleResult') {
+        // Capture browser-attested provenance before the first asynchronous read.
+        let routing, routingError;
+        try { routing = captureRoutedSource(message.result, message.mode, sender); }
+        catch (error) { routingError = error; }
         (async () => {
             try {
                 if (!message.result || !message.result.type || !message.mode) {
@@ -747,11 +758,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     throw new Error('Arcify connection changed. Search again.');
                 if (!peerId && message.result.metadata?.arcifyBridge) throw new Error('Arcify was disconnected. Search again before selecting this result.');
                 if (peerId && !saved) {
+                    if (routingError) throw routingError;
                     const context = await bridgeContext(message, sender);
                     // The extension helper is a launcher, so new navigation belongs to Arcify's
                     // newly active space rather than the helper's previous membership.
                     const mode = isNewTabSender(sender) ? SpotlightTabMode.NEW_TAB : message.mode;
-                    const action = await handleBridgeResult(arcifyBridge, chrome, message.result, mode, context);
+                    const action = await handleBridgeResult(arcifyBridge, chrome, message.result, mode, { ...context, routing });
                     if (!action?.handled) throw new Error('Arcify was disconnected before the action. Search again.');
                     sendResponse({ success: true, bridge: true, command: action.command, tabId: action.tabId, sourceTabId: context.tabId });
                     return;
@@ -762,7 +774,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             } catch (error) {
                 Logger.error('[Background] Error handling spotlight result:', error);
                 sendResponse({ success: false, error: error.message, errorCode: error.code });
-            }
+            } finally { routing?.dispose(); }
         })();
         return true;
     } else if (message.action === 'spotlightOpened') {

@@ -37,7 +37,7 @@ async function reloadOverlayBundle() {
     await import('../../overlay.js');
     ({ SpotlightMessageClient: messageClient } = await import('../../shared/message-client.js'));
 }
-function invalidateReceiver() { contentListeners.length = 0; }
+function invalidateReceiver() { window.__arcifyLittleArcHeader?.dispose(); window.__arcifyPeek?.dispose(); contentListeners.length = 0; }
 
 function dispatch(listeners, message, from) {
     return new Promise(resolve => {
@@ -82,6 +82,7 @@ async function restartBackground() {
 }
 
 beforeEach(async () => {
+    window.__arcifyLittleArcHeader?.dispose(); window.__arcifyPeek?.dispose();
     // JSDOM does not create iframe documents inside Shadow DOM. Supply only
     // that native boundary; the UI/events use a separate, real Document tree.
     const documents = new WeakMap();
@@ -190,6 +191,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    window.__arcifyLittleArcHeader?.dispose(); window.__arcifyPeek?.dispose();
     await close();
     // Let real queued close events/removal timers settle before the next module instance.
     await pause(220);
@@ -218,7 +220,9 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await pause(220);
         expectOpen();
         expect(frameDocument().querySelector('.arcify-bridge-status')).not.toBeNull();
-        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
+        expect(contentListeners).toHaveLength(5); // Little Arc refresh, Peek probe, activation, close, and live-result listeners.
+        expect(await dispatch(contentListeners, { type: 'arcifyPeekLiveProbe' }, { id: chromeMock.runtime.id }))
+            .toMatchObject({ live: false, safe: false, action: null });
         expect(messageClient.errorListeners.size).toBe(1);
         expect(chromeMock.tabs.sendMessage.mock.calls.filter(([, message]) => message.action === 'closeSpotlight')).toHaveLength(0);
     });
@@ -239,7 +243,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         expectOpen();
         messageClient.reportError('Still connected to the live status UI');
         expect(frameDocument().querySelector('[role="status"]').textContent).toContain('Still connected');
-        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
+        expect(contentListeners).toHaveLength(5); // Little Arc refresh, Peek probe, activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
     });
 
@@ -267,7 +271,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await pause(220);
         expect(host()).toBe(original);
         expectOpen();
-        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
+        expect(contentListeners).toHaveLength(5); // Little Arc refresh, Peek probe, activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
     });
 
@@ -282,7 +286,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         expect(await Promise.all(responses)).toEqual([{ success: true, open: true }, { success: true, open: true }]);
         await pause(220);
         expectOpen();
-        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
+        expect(contentListeners).toHaveLength(5); // Little Arc refresh, Peek probe, activation, close, and live-result listeners.
     });
 
     it('does not acknowledge paired launch before asynchronous real dialog creation completes', async () => {
@@ -300,6 +304,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
     });
 
     it('applies a new launch mode to real search and action closures and refocuses the input', async () => {
+        const listenerSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');
         await launch({ mode: 'current-tab' });
         expect(input().value).toBe(tab.url);
         expect(input().placeholder).toBe('Search or enter URL...');
@@ -314,7 +319,10 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await vi.waitFor(() => expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
             action: 'getLocalSuggestions', query: 'https://target.test', mode: 'new-tab'
         })));
-        input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        // JSDOM cannot manufacture trusted events. Exercise the actual registered handler.
+        listenerSpy.mock.calls.forEach(([name, listener], i) => {
+            if (name === 'keydown' && listenerSpy.mock.contexts[i] === input()) listener({ type: 'keydown', key: 'Enter', target: input(), isTrusted: true, preventDefault() {}, stopPropagation() {} });
+        });
         await vi.waitFor(() => expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
             action: 'spotlightHandleResult', mode: 'new-tab'
         })));
@@ -329,12 +337,12 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         await command('toggleSpotlightNewTab');
         await pause(220);
         expectOpen();
-        expect(contentListeners).toHaveLength(3); // Activation, close, and live-result listeners.
+        expect(contentListeners).toHaveLength(5); // Little Arc refresh, Peek probe, activation, close, and live-result listeners.
         expect(messageClient.errorListeners.size).toBe(1);
         await command('toggleSpotlightNewTab');
         await pause(220);
         expect(host()).toBeNull();
-        expect(contentListeners).toHaveLength(1);
+        expect(contentListeners).toHaveLength(3);
         expect(messageClient.errorListeners.size).toBe(0);
     });
 
@@ -342,7 +350,7 @@ describe('paired launch real overlay lifecycle (mock Chrome/native dialog bounda
         HTMLDialogElement.prototype.showModal = () => { throw new Error('Platform refused modal'); };
         expect((await launch()).ok).toBe(true);
         expect(host()).toBeNull();
-        expect(contentListeners).toHaveLength(1);
+        expect(contentListeners).toHaveLength(3);
         expect(messageClient.errorListeners.size).toBe(0);
         expect(chromeMock.tabs.create).toHaveBeenCalledExactlyOnceWith({
             url: chromeMock.runtime.getURL('newtab.html'), active: true, windowId: 2
@@ -559,7 +567,7 @@ describe('overlay keyboard document isolation', () => {
         vi.spyOn(HTMLIFrameElement.prototype, 'contentDocument', 'get').mockReturnValue(null);
         expect(await activate()).toMatchObject({ success: false });
         expect(host()).toBeNull();
-        expect(contentListeners).toHaveLength(1);
+        expect(contentListeners).toHaveLength(3);
         expect(messageClient.errorListeners.size).toBe(0);
     });
 });
@@ -585,7 +593,7 @@ describe('keyboard-command stale receiver recovery through actual background and
         expect(opens[0]).toEqual([42, expect.objectContaining({ ensureOpen: false, expectedUrl: tab.url }), { frameId: 0 }]);
         expect(opens[1]).toEqual([42, expect.objectContaining({ ensureOpen: true, recovery: true,
             tabId: 42, tabUrl: tab.url, expectedUrl: tab.url, mode: 'new-tab' }), { documentId: 'source-document' }]);
-        expect(contentListeners).toHaveLength(3);
+        expect(contentListeners).toHaveLength(5);
     });
 
     it('replaces a marked invalidated surface only after opening and preserves its input draft/range', async () => {
@@ -603,7 +611,7 @@ describe('keyboard-command stale receiver recovery through actual background and
         await pause(220);
         expectOpen();
         expect(input().value).toBe('unfinished query');
-        expect(contentListeners).toHaveLength(3);
+        expect(contentListeners).toHaveLength(5);
         expect(messageClient.errorListeners.size).toBe(1);
     });
 
@@ -676,7 +684,7 @@ describe('keyboard-command stale receiver recovery through actual background and
         await activate(); input().value = 'live draft';
         const original = host();
         await reloadOverlayBundle(); await reloadOverlayBundle();
-        expect(host()).toBe(original); expect(input().value).toBe('live draft'); expect(contentListeners).toHaveLength(3);
+        expect(host()).toBe(original); expect(input().value).toBe('live draft'); expect(contentListeners).toHaveLength(5);
         await activate({ ensureOpen: true });
         expectOpen(); expect(input().value).toBe('live draft');
     });
@@ -687,7 +695,7 @@ describe('keyboard-command stale receiver recovery through actual background and
         expect(chromeMock.scripting.executeScript).toHaveBeenCalledOnce();
         expect(chromeMock.tabs.create).not.toHaveBeenCalled();
         await pause(220);
-        expect(host()).toBeNull(); expect(contentListeners).toHaveLength(1);
+        expect(host()).toBeNull(); expect(contentListeners).toHaveLength(3);
     });
 
     it.each(['The message port closed before a response was received.', 'Overlay delivery timed out.', 'Unexpected transport failure'])

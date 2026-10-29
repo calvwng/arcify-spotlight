@@ -5,7 +5,7 @@ import { shouldCloseNewTab } from '../../shared/bridge-navigation-ui.js';
 
 const peerId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const ownId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-const sender = { id: ownId, tab: { id: 42, windowId: 2 }, url: 'https://example.com' };
+const sender = { id: ownId, frameId:0, tab: { id: 42, windowId: 2, url:'https://example.com',active:true,pinned:false,incognito:false }, url: 'https://example.com' };
 const snapshot = windowId => ({
     windowId, activeSpaceId: 'work', capturedAt: Date.now(),
     spaces: [{ id: 'work', name: 'Work', color: 'blue', bookmarkFolderId: '10', tabIds: [42, 43], pinnedTabIds: [43], temporaryTabIds: [42] }],
@@ -29,6 +29,10 @@ function callExternal(message, from = { id: peerId }) {
 const launch = (extra = {}) => ({ type: 'arcify-bridge', version: 1, requestId: 'test-request', command: 'launch', windowId: 2, mode: 'new-tab', ...extra });
 
 beforeEach(async () => {
+    for(const name of ['onUpdated','onRemoved','onDetached','onReplaced','onActivated']) chromeMock.tabs[name]={addListener:vi.fn(),removeListener:vi.fn()};
+    chromeMock.windows.onRemoved={addListener:vi.fn(),removeListener:vi.fn()};
+    chromeMock.tabs.get.mockResolvedValue({...sender.tab});
+    chromeMock.windows.get.mockResolvedValue({id:2,type:'normal',focused:true,incognito:false});
     chromeMock.storage.session ??= { get: vi.fn(async () => ({})), set: vi.fn(async () => {}) };
     chromeMock.storage.local.get.mockImplementation(async key => key === 'arcifyBridgePeerId' ? { arcifyBridgePeerId: peerId } : {});
     chromeMock.storage.sync.get.mockResolvedValue({ enableSpotlight: true });

@@ -26,6 +26,7 @@ describe('Shared Arcify bridge status surface', () => {
     let parent;
     let runtime;
     let mounted;
+    let eventSpy;
 
     beforeEach(() => {
         document.body.replaceChildren();
@@ -34,13 +35,19 @@ describe('Shared Arcify bridge status surface', () => {
         runtime = { sendMessage: vi.fn().mockResolvedValue(statusResponse()) };
         vi.stubGlobal('chrome', { runtime });
         mounted = [];
+        eventSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');
     });
 
     afterEach(() => {
         mounted.forEach(surface => surface.dispose());
         vi.unstubAllGlobals();
+        eventSpy.mockRestore();
     });
 
+    async function clickSettings(button) {
+        eventSpy.mock.calls.forEach(([type, listener], i) => { if (type === 'click' && eventSpy.mock.contexts[i] === button) listener({ type:'click', button:0, isTrusted:true }); });
+        await mounted.at(-1).settingsActions.operation;
+    }
     function mount() {
         const surface = mountBridgeStatus(parent);
         mounted.push(surface);
@@ -100,13 +107,13 @@ describe('Shared Arcify bridge status surface', () => {
         expect(label.textContent).toContain('Bookmarks for Work are unavailable');
     });
 
-    it('opens connection settings through the internal action', async () => {
+    it('opens Spotlight settings through the internal action', async () => {
         const { button } = mount();
         await flushMessages();
         runtime.sendMessage.mockResolvedValue({ success: true });
         expect(button.type).toBe('button');
-        expect(button.textContent).toBe('Connection settings');
-        button.click();
+        expect(button.textContent).toBe('Spotlight settings');
+        await clickSettings(button);
         await flushMessages();
         expect(runtime.sendMessage).toHaveBeenLastCalledWith({ action: 'arcifyBridgeOpenSettings' });
         expect(runtime.sendMessage.mock.calls.every(args => args.length === 1)).toBe(true);
@@ -116,10 +123,10 @@ describe('Shared Arcify bridge status surface', () => {
         const { button, label, row } = mount();
         await flushMessages();
         runtime.sendMessage.mockRejectedValueOnce(new Error('No background worker.'));
-        button.click();
+        await clickSettings(button);
         await flushMessages();
         expect(row.dataset.state).toBe('error');
-        expect(label.textContent).toContain('Could not open connection settings.');
+        expect(label.textContent).toContain('Could not open Spotlight settings.');
         expect(label.textContent).toContain('chrome://extensions');
     });
 
@@ -128,7 +135,7 @@ describe('Shared Arcify bridge status surface', () => {
             const { button, label, row } = mount();
             await flushMessages();
             runtime.sendMessage.mockResolvedValueOnce(response);
-            button.click();
+            await clickSettings(button);
             await flushMessages();
             expect(row.dataset.state).toBe('error');
             expect(label.textContent).toMatch(/settings/i);

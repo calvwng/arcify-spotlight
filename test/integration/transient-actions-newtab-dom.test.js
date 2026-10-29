@@ -51,7 +51,7 @@ describe('Little Arc in the actual newtab renderer', () => {
     it('offers nothing for old peers or incomplete/non-web links', async () => {
         scope = null; await mount(); type('little arc https://target.test/'); expect(page.resultsContainer.querySelector('[data-result-type="arcify-transient-action"]')).toBeNull();
         scope = transientScope(); await page.transientActions.prepare();
-        for (const query of ['little arc', 'little arc example.test', 'little arc chrome://settings']) { type(query); expect(page.resultsContainer.querySelector('[data-result-type="arcify-transient-action"]')).toBeNull(); }
+        for (const query of ['little arc', 'little arc localhost', 'little arc chrome://settings']) { type(query); expect(page.resultsContainer.querySelector('[data-result-type="arcify-transient-action"]')).toBeNull(); }
     });
     it('pagehide retires pending UI and never replays a late acknowledgement', async () => {
         await mount(); let resolve; mutation.mockImplementation(() => new Promise(done => { resolve = done; })); type('little arc https://target.test/'); fire(page.input, 'keydown');

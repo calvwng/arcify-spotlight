@@ -136,3 +136,12 @@ describe('Space navigation in the actual isolated overlay', () => {
         expect(mutations()).toHaveLength(0);
     });
 });
+
+describe('local Spotlight settings in production overlay',()=>{
+ it.each(['Spotlight settings','connection settings','pairing'])('opens existing options route unpaired for %s',async query=>{
+  scope=null;chromeMock.storage.local.get.mockResolvedValue({});await open();type(query);await flush();
+  expect(frame().querySelectorAll('[data-result-type="spotlight-settings-action"]')).toHaveLength(1);
+  fire(input(),'keydown');await flush();expect(calls.filter(m=>m.action==='arcifyBridgeOpenSettings')).toHaveLength(1);expect(mutations()).toHaveLength(0);expect(calls.filter(m=>m.action==='spotlightHandleResult')).toHaveLength(0);
+ });
+ it('paired settings distinguishes local settings from Arcify settings',async()=>{await open();type('settings');await flush();expect(frame().querySelectorAll('[data-result-type="spotlight-settings-action"]')).toHaveLength(1);expect([...frame().querySelectorAll('[data-result-type="arcify-space-action"]')].filter(r=>r.textContent.includes('Open Arcify settings'))).toHaveLength(1);});
+});

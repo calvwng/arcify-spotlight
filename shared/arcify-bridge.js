@@ -1,3 +1,4 @@
+import { ROUTED_OPEN_FEATURE } from './arcify-bridge-protocol.js';
 import { createFavoriteWitness } from './favorite-witness.js';
 /** Versioned, explicitly paired cross-extension transport. No workspace data is persisted. */
 import { BRIDGE_TYPE, BRIDGE_VERSION, GLOBAL_FAVORITES_FEATURE, PAIRING_GENERATION_KEY, PEER_KEY, trustedSender, sendBridgeRequest, isFavoriteUrl } from './arcify-bridge-protocol.js';
@@ -110,6 +111,19 @@ export function validateSnapshot(snapshot, windowId, { allowOrdinaryFavorites = 
             if (favorite.tabId !== null) bindings.add(favorite.tabId);
         }
     }
+    if (snapshot.sharedToday !== undefined) {
+        if (!Array.isArray(snapshot.sharedToday)) fail('INVALID_RESPONSE', 'Invalid shared Today list.');
+        const seen = new Set();
+        for (const row of snapshot.sharedToday) {
+            if (!row || Object.keys(row).length !== 6 || !['id','windowId','spaceId','bookmarkFolderId','title','url'].every(k => Object.hasOwn(row,k))
+                || !positiveInt(row.id) || !positiveInt(row.windowId) || seen.has(row.id) || !spaces.has(row.spaceId)
+                || snapshot.spaces.find(s => s.id === row.spaceId)?.bookmarkFolderId !== row.bookmarkFolderId
+                || typeof row.title !== 'string' || typeof row.url !== 'string'
+                || row.windowId === windowId && !snapshot.spaces.find(s => s.id === row.spaceId)?.temporaryTabIds.includes(row.id)
+                || row.windowId !== windowId && tabs.has(row.id)) fail('INVALID_RESPONSE', 'Invalid shared Today identity.');
+            seen.add(row.id);
+        }
+    }
     return snapshot;
 }
 
@@ -143,7 +157,7 @@ export class ArcifyBridgeClient {
         return trustedSender(sender, peerId);
     }
 
-    async request(command, windowId, payload = {}, expectedPeerId = null) {
+    async request(command, windowId, payload = {}, expectedPeerId = null, routing = null) {
         const peerId = await this.getPeerId();
         if (expectedPeerId && peerId !== expectedPeerId) fail('DISCONNECTED', 'Arcify pairing changed before the request. Search again.');
         if (!peerId) return null;
@@ -156,13 +170,20 @@ export class ArcifyBridgeClient {
         // Negotiate on each operation. Only the read-only hello may fall back
         // once, on old peers' exact unknown-field error. Never replay mutations.
         let hello;
+        const routed = command === 'openRoutedTab';
+        if (routed && (!routing || routing.source !== payload.source)) fail('INVALID_REQUEST', 'Routed opening requires a live browser-attested source.');
         try {
-            hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE] },
+            hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE, 'sharedTodayV1', ...(routed ? [ROUTED_OPEN_FEATURE] : [])] },
                 { role: 'arcify', timeout: this.timeoutMs });
         } catch (error) {
             if (error.code !== 'INVALID_REQUEST') throw error;
             await checkPairing();
-            hello = await sendBridgeRequest(peerId, 'hello', { windowId }, { role: 'arcify', timeout: this.timeoutMs });
+            try { hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE] }, { role: 'arcify', timeout: this.timeoutMs }); }
+            catch (legacyError) {
+                if (legacyError.code !== 'INVALID_REQUEST') throw legacyError;
+                await checkPairing();
+                hello = await sendBridgeRequest(peerId, 'hello', { windowId }, { role: 'arcify', timeout: this.timeoutMs });
+        }
         }
         await checkPairing();
         if (hello.extensionId !== peerId) fail('INVALID_RESPONSE', 'The Arcify handshake did not match the paired extension ID.');
@@ -173,11 +194,21 @@ export class ArcifyBridgeClient {
         validateSnapshot(hello.snapshot, windowId, { allowOrdinaryFavorites: ordinary });
         if (hello.capabilities?.includes('persistentFavorites') && !Array.isArray(hello.snapshot.favorites))
             fail('INVALID_RESPONSE', 'Arcify did not include its saved Favorites.');
+        const shared = hello.capabilities?.includes('sharedTodayV1') === true;
+        if (shared && !Array.isArray(hello.snapshot.sharedToday)) fail('INVALID_RESPONSE', 'Missing shared Today list.');
         if (command === 'hello' || command === 'snapshot') return hello;
+        if (routed && !hello.capabilities?.includes(ROUTED_OPEN_FEATURE)) fail('UNSUPPORTED', 'Update Arcify for source-aware opening. No page was opened.');
+        if (routed) { await routing.check(); await checkPairing(); routing.assert(); routing.dispatched(); }
+        if (command === 'openSharedToday' && !shared) fail('UNSUPPORTED', 'Update Arcify for shared Today.');
         const response = await sendBridgeRequest(peerId, command, { ...payload, windowId,
-            ...(ordinary ? { supportedFeatures: [GLOBAL_FAVORITES_FEATURE] } : {}) }, { role: 'arcify', timeout: this.timeoutMs });
+            ...((ordinary || shared || routed) ? { supportedFeatures: [...(ordinary ? [GLOBAL_FAVORITES_FEATURE] : []), ...(shared ? ['sharedTodayV1'] : []), ...(routed ? [ROUTED_OPEN_FEATURE] : [])] } : {}) }, { role: 'arcify', timeout: this.timeoutMs });
         await checkPairing();
         validateSnapshot(response.snapshot, windowId, { allowOrdinaryFavorites: ordinary });
+        if (command === 'openSharedToday' && (response.tabId !== payload.tabId || response.ownerWindowId !== payload.ownerWindowId || response.spaceId !== payload.spaceId
+            || !response.snapshot.sharedToday?.some(r => r.id === payload.tabId && r.windowId === payload.ownerWindowId && r.spaceId === payload.spaceId && r.bookmarkFolderId === payload.bookmarkFolderId)))
+            fail('INVALID_RESPONSE', 'Opening shared Today was not confirmed. Check its owning window.');
+        if (routed && (!positiveInt(response.tabId) || response.transientWindowId !== undefined && !positiveInt(response.transientWindowId)))
+            fail('INVALID_RESPONSE', 'The routed opening was not confirmed. Check your tabs before trying again.');
         if (command === 'openFavorite' && (!positiveInt(response.tabId) ||
             response.snapshot.favorites?.find(favorite => favorite.id === payload.favoriteId)?.tabId !== response.tabId)) {
             fail('INVALID_RESPONSE', 'Arcify did not identify the opened Favorite. Refresh before trying again.');
@@ -220,7 +251,7 @@ export class ArcifyBridgeClient {
             // This is only a local status label; the peer still rejects all requests
             // until its own explicitly configured ID matches this extension.
             if (error.code === 'UNAUTHORIZED') {
-                return { configured: true, peerId, status: 'pending', message: 'Arcify ID saved. To finish pairing, copy Spotlight’s ID from Connection settings into Arcify’s connection settings and save it, then refresh status.' };
+                return { configured: true, peerId, status: 'pending', message: 'Arcify ID saved. To finish pairing, copy Spotlight’s ID from Spotlight settings into Arcify’s connection settings and save it, then refresh status.' };
             }
             return { configured: true, peerId, status: error.code === 'UNAVAILABLE' || error.code === 'TIMEOUT' ? 'unavailable' : 'error', message: error.message };
         }

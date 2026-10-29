@@ -123,8 +123,36 @@ it('Chrome search rejection does not leave a blank intermediate page or retry', 
 
 it('new-tab search still creates its owned target through Arcify before search', async () => {
     expect(await action('search-query', 'new-tab')).toMatchObject({ command: 'search', tabId: 30 });
-    expect(state.commands).toEqual(['hello', 'hello', 'openTab']);
+    expect(state.commands).toEqual(['hello', 'openTab']);
     expect(api.search.query).toHaveBeenCalledExactlyOnceWith({ text: 'weather tomorrow', tabId: 30 });
     expect(api.tabs.get).not.toHaveBeenCalled();
     expect(state.url).toBe(ORIGINAL_URL);
+});
+
+it('dispatches new-tab search after one authenticated handshake and one mutation round trip', async () => {
+    vi.useFakeTimers();
+    client.timeoutMs = 100;
+    const start = Date.now();
+    const originalSend = api.runtime.sendMessage.getMockImplementation();
+    api.runtime.sendMessage.mockImplementation((...args) => setTimeout(() => originalSend(...args), 25));
+    let dispatchedAt;
+    api.search.query.mockImplementation(async () => { dispatchedAt = Date.now() - start; });
+    const pending = action('search-query', 'new-tab');
+    await vi.advanceTimersByTimeAsync(49);
+    expect(api.search.query).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(dispatchedAt).toBe(50);
+    expect(state.commands).toEqual(['hello', 'openTab']);
+});
+
+it('new-tab search still fails closed if pairing changes during its only handshake', async () => {
+    api.runtime.sendMessage.mockImplementation((peer, request, callback) => {
+        state.commands.push(request.command);
+        state.peer = '';
+        callback(responseFor(request, 'arcify', { ok: true, extensionId: PEER, snapshot: snapshot() }));
+    });
+    await expect(action('search-query', 'new-tab')).rejects.toMatchObject({ code: 'DISCONNECTED' });
+    expect(state.commands).toEqual(['hello']);
+    expect(api.search.query).not.toHaveBeenCalled();
 });

@@ -51,7 +51,7 @@ function getExtensionPlugins(isDev = false) {
         await fs.copy('manifest.json', `${outDir}/manifest.json`);
 
         // The options page is a standalone module with no bundled dependencies.
-        for (const file of ['options.html', 'options.js', 'options.css']) {
+        for (const file of ['options.html', 'options.js', 'options.css', 'little-arc-header.html', 'peek-wrapper.html']) {
           await fs.copy(file, `${outDir}/${file}`);
         }
 
@@ -88,7 +88,7 @@ function getExtensionPlugins(isDev = false) {
         console.log('🔄 Building spotlight overlay...');
 
         // Build overlay.js as IIFE for content script injection
-        await build({
+        for (const entry of ['overlay', 'peek-preview-observer']) await build({
           configFile: false,
           define: {
             '__DEBUG_ENABLED__': JSON.stringify(isDev)
@@ -98,10 +98,10 @@ function getExtensionPlugins(isDev = false) {
             emptyOutDir: false, // Don't clear main build
             rollupOptions: {
               input: {
-                'spotlight-overlay': resolve(process.cwd(), 'overlay.js'),
+                [entry]: resolve(process.cwd(), `${entry}.js`),
               },
               output: {
-                entryFileNames: 'overlay.js',
+                entryFileNames: `${entry}.js`,
                 format: 'iife',
                 inlineDynamicImports: true,
               }

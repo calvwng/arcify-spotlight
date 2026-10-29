@@ -1,7 +1,9 @@
+import { isRoutedUrlSubmission } from './routed-open-source.js';
 /** Route navigation through Arcify only while explicitly configured. */
 import { ArcifyBridgeError } from './arcify-bridge.js';
 import { ResultType, SpotlightTabMode } from './search-types.js';
 import { isSafeUrl, isFavoriteUrl } from './arcify-bridge-protocol.js';
+import { normalizeBrowserPageUrl } from './browser-page-url.js';
 
 export async function handleBridgeResult(bridge, api, result, mode, context) {
     const peerId = await bridge.getPeerId();
@@ -13,16 +15,29 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
     return bridge.serializeAction(async () => {
         if (await bridge.getPeerId() !== peerId) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify pairing changed. Search again.');
         const { windowId, tabId } = context;
-        const snapshot = await bridge.snapshot(windowId, peerId);
-        if (!snapshot) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify connection changed. Try again.');
         const owner = result.metadata?.arcifyBridge;
+        const isSearch = result.type === ResultType.SEARCH_QUERY ||
+            (result.type === ResultType.AUTOCOMPLETE_SUGGESTION && !result.metadata?.isUrl);
+        // Owned selections and current-tab searches need a snapshot here to check
+        // their identity. Ordinary navigation/new-tab searches do not consume it:
+        // request() already performs a fresh authenticated hello, validates its
+        // snapshot and checks pairing generation before dispatching the mutation.
+        // Avoid a second full workspace reconciliation on those submit paths.
+        const needsSnapshot = owner || [ResultType.SAVED_FAVORITE, ResultType.OPEN_TAB, ResultType.PINNED_TAB].includes(result.type) ||
+            isSearch && mode === SpotlightTabMode.CURRENT_TAB;
+        const snapshot = needsSnapshot ? await bridge.snapshot(windowId, peerId) : null;
+        if (needsSnapshot && !snapshot) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify connection changed. Try again.');
         if (owner?.peerId && owner.peerId !== peerId) throw new ArcifyBridgeError('STALE_RESULT', 'Arcify pairing changed. Search again.');
         if (owner && owner.windowId !== windowId) {
             throw new ArcifyBridgeError('WRONG_WINDOW', 'This result belongs to another browser window. Search again.');
         }
         let command;
         let payload;
-        if (owner?.kind === 'favorite' || result.type === ResultType.SAVED_FAVORITE) {
+        if (owner?.kind === 'remoteToday') {
+            const row = snapshot.sharedToday?.find(row => row.id === owner.tabId && row.windowId === owner.ownerWindowId && row.spaceId === owner.spaceId && row.bookmarkFolderId === owner.bookmarkFolderId);
+            if (!row || row.windowId === windowId) throw new ArcifyBridgeError('STALE_RESULT', 'This shared Today tab changed. Search again.');
+            command = 'openSharedToday'; payload = { tabId: row.id, ownerWindowId: row.windowId, spaceId: row.spaceId, bookmarkFolderId: row.bookmarkFolderId };
+        } else if (owner?.kind === 'favorite' || result.type === ResultType.SAVED_FAVORITE) {
             if (result.type !== ResultType.SAVED_FAVORITE || owner?.kind !== 'favorite' || owner.peerId !== peerId ||
                 typeof owner.favoriteId !== 'string' || !owner.favoriteId || owner.favoriteId.length > 200 ||
                 Object.keys(owner).some(key => !['kind', 'peerId', 'windowId', 'favoriteId'].includes(key)) ||
@@ -50,8 +65,7 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
                 throw new ArcifyBridgeError('STALE_RESULT', 'That tab is no longer in this window. Search again.');
             }
             command = 'activateTab'; payload = { tabId: selectedId };
-        } else if (result.type === ResultType.SEARCH_QUERY ||
-            (result.type === ResultType.AUTOCOMPLETE_SUGGESTION && !result.metadata?.isUrl)) {
+        } else if (isSearch) {
             const query = result.metadata?.query;
             if (typeof query !== 'string' || !query.trim()) throw new ArcifyBridgeError('INVALID_QUERY', 'Search text is missing.');
             let searchTabId;
@@ -82,9 +96,18 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
             // allowlist as Arcify and fail before dispatch, without native fallback.
             if (!isSafeUrl(result.url)) throw new ArcifyBridgeError('UNSUPPORTED_URL', 'This address cannot be opened through the Arcify connection. Choose another result.');
             command = mode === SpotlightTabMode.NEW_TAB ? 'openTab' : 'navigateTab';
-            payload = command === 'openTab' ? { url: result.url } : { tabId, url: result.url };
+            const url = normalizeBrowserPageUrl(result.url) ?? result.url;
+            payload = command === 'openTab' ? { url } : { tabId, url };
+            if (context.routing && isRoutedUrlSubmission(result, mode)) {
+                if (context.routing.windowId !== windowId || context.routing.source.tabId !== tabId)
+                    throw new ArcifyBridgeError('STALE_ROUTING_SOURCE', 'The original Spotlight page changed.');
+                await context.routing.check();
+                command = 'openRoutedTab'; payload = {url, source:context.routing.source};
+            }
         }
-        const response = await bridge.request(command, windowId, payload, peerId);
+        const response = await (command === 'openRoutedTab'
+            ? bridge.request(command, windowId, payload, peerId, context.routing)
+            : bridge.request(command, windowId, payload, peerId));
         if (!response) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify connection changed. Try again.');
         return { handled: true, command, tabId: response.tabId };
     });

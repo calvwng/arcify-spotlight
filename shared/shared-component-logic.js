@@ -21,7 +21,7 @@ import { isTabActionResult } from './arcify-tab-actions-protocol.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 import { resultIdentity } from './selection-manager.js';
 
-export const isActionResult = result => isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => result?.type === 'spotlight-settings-action' || isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
@@ -230,7 +230,7 @@ export class SharedSpotlightLogic {
     static createInputHandler(onInstantUpdate, onAsyncUpdate, debounceDelay = 150) {
         let debounceTimeout = null;
 
-        return (e) => {
+        const handler = (e) => {
             // Clear previous debounced call
             if (debounceTimeout) {
                 clearTimeout(debounceTimeout);
@@ -244,9 +244,15 @@ export class SharedSpotlightLogic {
             // Debounce async update
             if (onAsyncUpdate) {
                 debounceTimeout = setTimeout(() => {
+                    debounceTimeout = null;
                     onAsyncUpdate(e);
                 }, debounceDelay);
             }
         };
+        handler.cancel = () => {
+            clearTimeout(debounceTimeout);
+            debounceTimeout = null;
+        };
+        return handler;
     }
 }

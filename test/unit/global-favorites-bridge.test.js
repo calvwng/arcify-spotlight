@@ -23,11 +23,11 @@ it('new client negotiates ordinary capability before an explicitly marked mutati
     expect(sent.map(value => value.command)).toEqual(['hello', 'openFavorite']);
     expect(sent.every(value => value.supportedFeatures?.[0] === GLOBAL_FAVORITES_FEATURE)).toBe(true);
 });
-it('old pinned peer gets only one read-only compatibility fallback, then an unmarked mutation', async () => {
+it('old pinned peer gets bounded read-only shared/ordinary compatibility fallbacks, then an unmarked mutation', async () => {
     const { client, sent } = setup({ old: true }); await client.request('openFavorite', 1, { favoriteId: 'saved' });
-    expect(sent.map(value => value.command)).toEqual(['hello', 'hello', 'openFavorite']);
-    expect(sent[0].supportedFeatures).toEqual([GLOBAL_FAVORITES_FEATURE]);
-    expect(sent[1].supportedFeatures).toBeUndefined(); expect(sent[2].supportedFeatures).toBeUndefined();
+    expect(sent.map(value => value.command)).toEqual(['hello', 'hello', 'hello', 'openFavorite']);
+    expect(sent[0].supportedFeatures).toEqual([GLOBAL_FAVORITES_FEATURE, 'sharedTodayV1']);
+    expect(sent[1].supportedFeatures).toEqual([GLOBAL_FAVORITES_FEATURE]); expect(sent[2].supportedFeatures).toBeUndefined(); expect(sent[3].supportedFeatures).toBeUndefined();
 });
 it('unadvertised ordinary bindings fail before any mutation', async () => {
     const { client, sent } = setup({ ordinaryCapability: false });

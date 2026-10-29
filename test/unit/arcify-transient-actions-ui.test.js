@@ -18,7 +18,7 @@ async function mount(options = {}) { controller = new TransientActionController(
 const result = () => controller.results('https://target.test/')[0];
 describe('Little Arc explicit URL controller', () => {
     it.each(['https://target.test/', 'little arc https://target.test/', ' Little Arc   https://target.test/ '])('extracts %s', query => expect(transientUrlFromQuery(query)).toBe('https://target.test/'));
-    it.each(['', 'little arc', 'example.test', 'little arc example.test', 'open little arc https://target.test/', 'little arc javascript:alert(1)', 'chrome://settings'])('offers nothing for %s', async query => { await mount(); expect(controller.results(query)).toEqual([]); });
+    it.each(['', 'little arc', 'example.test', 'little arc localhost', 'open little arc https://target.test/', 'little arc javascript:alert(1)', 'chrome://settings'])('offers nothing for %s', async query => { await mount(); expect(controller.results(query)).toEqual([]); });
     it('hides when the background reports an old/unpaired peer', async () => { scope = null; await mount(); expect(result()).toBeUndefined(); expect(mutations()).toHaveLength(0); });
     it('keeps the ordinary complete URL row first; explicit command can be first', async () => {
         await mount();

@@ -26,3 +26,9 @@ is not full paired-browser acceptance. The current changes are in
 [Arcify draft PR #75](https://github.com/calvwng/arcify/pull/75).
 
 Little Arc restart behavior: after a browser restart or extension reload clears session state, pages without their exact controller in the same restored window behave like ordinary restored tabs. The launch action and controller warn about this first-version limit. See [Little Arc](docs/little-arc-spotlight.md).
+
+- [Shared Today across windows (candidate)](docs/shared-today.md)
+
+- [Little Arc header and link action (candidate)](docs/little-arc-header.md)
+
+See [Compact Little Arc header](docs/little-arc-header-compact.md) for the reversible progressive-disclosure candidate.

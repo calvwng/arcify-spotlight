@@ -37,6 +37,12 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["peek-preview-observer.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [
@@ -51,6 +57,16 @@
       ],
       "extension_ids": [
         "*"
+      ]
+    },
+    {
+      "resources": [
+        "little-arc-header.html",
+        "peek-wrapper.html"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
       ]
     }
   ],

@@ -1,0 +1,19 @@
+# Little Arc header candidate
+
+This candidate layers the Little Arc upgrade on the tested shared Today pair; it is not installed. Arcify base is 0995d9a plus V4 recovery and shared Today; Spotlight base is 3b0b178 plus shared Today.
+
+Spotlight's existing HTTP(S) top-frame website access now supports an automatic header only when Arcify confirms the exact native page belongs to a ready Little Arc record with its exact surviving controller. The site remains the original native page. The header uses a separate extension-origin iframe; it does not wrap websites. No new website host access is declared. The new header HTML is web-accessible on HTTP(S) pages. Arcify declares contextMenus for the link-only Open link in Little Arc action. Installation and any resulting permission grant are separate decisions.
+
+Type `little arc example.com/path` or a complete HTTP(S) URL in Spotlight. Only explicit Little Arc commands normalize conservative DNS-style domains to HTTPS. Search phrases, local hosts, IP literals, credentials, unsupported schemes and ambiguous ports remain unsupported by this action. The action displays the complete normalized URL.
+
+The header shows temporary status and a suggested destination captured at launch where available. Choosing a destination never grants Space membership. Review Open in [Space] records only a short-lived draft and focuses the existing trusted control tab. Review the native page and destination there, then explicitly choose Confirm: Open in [Space]. Only that trusted form submission invokes the existing guarded exact-tab handoff. The header cannot submit promotion. Trusted controls opens that control tab without proposing a destination.
+
+Dismiss collapses the header to Show Little Arc controls. The overlay does not shift website layout. It hides in fullscreen and remounts after supported navigation or BFCache return. Unexpected worker/Port disconnect permits at most two bounded read-only reinspection attempts, never a mutation replay. An untracked/unavailable response is terminal until a fresh native/page/pairing event. Restricted pages, blocked extension frames, removed hosts, unavailable pairing and missing controllers retain the separate trusted controller fallback.
+
+The website can obscure/remove/reposition an injected host or interfere with bootstrap availability. Shadow DOM is styling isolation, not a security boundary; the extension-origin frame is not browser chrome or clickjacking-proof final consent. Private challenges stay out of DOM and URLs. Browser-attested source/frame identity, live native identity, connection lifetime, pairing generation and one-use review contexts are checked. Optional sender documentId and worker URL are not assumed present.
+
+Header contexts and drafts are in-memory and retire on worker restart, disconnect/navigation or expiry. A lost suggestion requires an explicit selection. Full browser restart remains a release gate: the existing exact-controller orphan flow can select a live page, while missing/moved controllers cannot safely preserve transient status. No URL identity guessing, automatic recreation or automatic recovery is introduced.
+
+## Acceptance gates
+
+Automated mocks do not establish native Helium behavior. Before deployment, verify extension-frame sender shape, CSS/CSP compatibility, narrow widths and zoom, keyboard/screen-reader navigation, fullscreen, SPA/redirect/reload/BFCache, controller focus and final consent. Test repeated review, stale/deleted/replaced Space, closed destination, pin/Favorite/Split changes, interrupted native moves, persistence/readback failures and lost acknowledgements with disposable pages. Confirm same native tab identity and page state across final handoff, no duplicates/reloads, and no retry after uncertainty. Test worker restart separately from full browser restart and missing controller. Keep fallback accessible when the header cannot run.

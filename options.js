@@ -1,3 +1,4 @@
+import { installPeekOptions } from './shared/peek-options.js';
 export const OPTIONS_APPEARANCE_KEY = 'spotlightOptionsAppearance';
 
 function normalizeAppearance(value) {
@@ -196,6 +197,7 @@ export function initializeBridgeOptions({
 }
 
 if (globalThis.document) {
+    if (document.getElementById('peek-enabled')) installPeekOptions();
     initializeOptionsAppearance();
     if (document.getElementById('bridge-settings-form')) initializeBridgeOptions();
 }

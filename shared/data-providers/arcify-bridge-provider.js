@@ -42,6 +42,13 @@ export class ArcifyBridgeProvider extends BackgroundDataProvider {
             metadata: { ...this.metadata('tab', tab), tabId: tab.id, windowId: tab.windowId,
                 groupName: this.spaces.get(tab.spaceId)?.name || null }
         }));
+        for (const row of this.snapshot.sharedToday || []) {
+            if (row.windowId === this.snapshot.windowId || row.id === this.excludeTabId) continue;
+            results.push(new SearchResult({ type: ResultType.OPEN_TAB, title: row.title || row.url, url: row.url,
+                metadata: { ...this.metadata('remoteToday', row),
+                    arcifyBridge: { kind: 'remoteToday', peerId: this.peerId, windowId: this.snapshot.windowId,
+                        tabId: row.id, ownerWindowId: row.windowId, spaceId: row.spaceId, bookmarkFolderId: row.bookmarkFolderId } } }));
+        }
         return this.filter(results, query);
     }
 

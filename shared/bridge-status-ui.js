@@ -1,4 +1,5 @@
 /** Small shared connection/error surface used by overlay and new-tab. */
+import { SpotlightSettingsActionController } from './spotlight-settings-action.js';
 import { SpotlightMessageClient } from './message-client.js';
 
 export function mountBridgeStatus(parent, { input } = {}) {
@@ -11,7 +12,7 @@ export function mountBridgeStatus(parent, { input } = {}) {
     label.style.flex = '1';
     const settings = document.createElement('button');
     settings.type = 'button';
-    settings.textContent = 'Connection settings';
+    settings.textContent = 'Spotlight settings';
     settings.style.cssText = 'font:inherit;color:inherit;background:transparent;border:1px solid currentColor;border-radius:6px;padding:3px 7px;cursor:pointer;';
     row.append(label, settings);
     parent.append(row);
@@ -48,13 +49,9 @@ export function mountBridgeStatus(parent, { input } = {}) {
             if (!actionError && !actionSuccess) render(passiveStatus);
         } else setError(message, source === 'action');
     });
-    settings.addEventListener('click', async () => {
-        try {
-            const response = await chrome.runtime.sendMessage({ action: 'arcifyBridgeOpenSettings' });
-            if (!response?.success) showError(response?.error || 'Could not open connection settings. Open Spotlight details in chrome://extensions.');
-        }
-        catch { showError('Could not open connection settings. Open Spotlight details in chrome://extensions.'); }
-    });
+    const settingsActions = new SpotlightSettingsActionController({ showError,
+        showSuccess(message) { actionError = false; actionSuccess = true; render({ message, state: 'connected' }); } });
+    settings.addEventListener('click', event => settingsActions.invoke(settingsActions.results('Spotlight settings')[0], event));
     label.textContent = 'Checking Arcify connection…';
     const initialPassiveRevision = passiveRevision;
     const finishInitialStatus = status => {
@@ -71,5 +68,5 @@ export function mountBridgeStatus(parent, { input } = {}) {
         finishInitialStatus({ state: response.status.status,
             message: response.status.status === 'disabled' ? 'Standalone Spotlight' : response.status.message });
     }).catch(() => finishInitialStatus({ state: 'error', message: 'Could not check the Arcify connection.' }));
-    return { showError, showSuccess(message) { actionError = false; actionSuccess = true; if (!disposed) { label.textContent = message; row.dataset.state = 'connected'; } }, dispose() { disposed = true; input?.removeEventListener('input', clearSuccess); unsubscribe(); row.remove(); } };
+    return { settingsActions, showError, showSuccess(message) { actionError = false; actionSuccess = true; if (!disposed) { label.textContent = message; row.dataset.state = 'connected'; } }, dispose() { settingsActions.dispose(); disposed = true; input?.removeEventListener('input', clearSuccess); unsubscribe(); row.remove(); } };
 }
