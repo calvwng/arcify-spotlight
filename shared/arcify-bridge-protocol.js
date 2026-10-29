@@ -64,9 +64,10 @@ export function validateRequest(message, commands) {
         throw bridgeError('INVALID_REQUEST', 'Invalid supported feature marker.');
     if (message.helperSource !== undefined && (!message.supportedFeatures?.includes(HELPER_SOURCE_FEATURE)
         || !message.helperSource || Array.isArray(message.helperSource)
-        || Object.keys(message.helperSource).length !== 3 || !['tabId', 'url', 'token'].every(key => Object.hasOwn(message.helperSource, key))
+        || Object.keys(message.helperSource).length !== 4 || !['tabId', 'url', 'nativeUrl', 'token'].every(key => Object.hasOwn(message.helperSource, key))
         || !isTabId(message.helperSource.tabId) || typeof message.helperSource.url !== 'string'
         || !/^chrome-extension:\/\/[a-p]{32}\/newtab\.html(?:[?#].*)?$/.test(message.helperSource.url)
+        || message.helperSource.nativeUrl !== message.helperSource.url && !['chrome://newtab', 'chrome://newtab/'].includes(message.helperSource.nativeUrl)
         || typeof message.helperSource.token !== 'string' || !/^[0-9a-f-]{36}$/.test(message.helperSource.token)))
         throw bridgeError('INVALID_REQUEST', 'Invalid exact helper source.');
     if (message.command === 'openRoutedTab' && (!message.supportedFeatures?.includes(ROUTED_OPEN_FEATURE)

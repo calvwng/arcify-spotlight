@@ -1,4 +1,5 @@
 import { bridgeError, isWindowId, trustedSender } from './arcify-bridge-protocol.js';
+import { isBrowserNewTabAlias } from './active-newtab-reuse.js';
 
 const stale = () => bridgeError('STALE_HELPER_SOURCE', 'The Spotlight helper moved or changed. Reopen Spotlight in the intended window.');
 
@@ -8,9 +9,13 @@ export function createHelperSourceCapture(api) {
     const grants = new Map();
     const capture = sender => {
         if (sender?.id !== api.runtime.id || sender.url?.split(/[?#]/)[0] !== api.runtime.getURL('newtab.html')) return null;
-        if (!isWindowId(sender.tab?.id) || !isWindowId(sender.tab.windowId) || sender.tab.url !== sender.url ||
+        if (!isWindowId(sender.tab?.id) || !isWindowId(sender.tab.windowId) ||
+            sender.tab.url !== sender.url && !isBrowserNewTabAlias(sender.tab.url) ||
             sender.frameId !== 0 || sender.documentLifecycle !== undefined && sender.documentLifecycle !== 'active') throw stale();
-        const source = Object.freeze({ tabId: sender.tab.id, url: sender.url, token: crypto.randomUUID() });
+        // Chrome's New Tab override attests our extension document in sender.url
+        // while native tab APIs retain chrome://newtab/. Keep both identities;
+        // later native reads must match the exact captured spelling, not aliases.
+        const source = Object.freeze({ tabId: sender.tab.id, url: sender.url, nativeUrl: sender.tab.url, token: crypto.randomUUID() });
         const windowId = sender.tab.windowId, removers = [], expiresAt = performance.now() + 20000;
         let changed = false, disposed = false;
         const dispose = () => { disposed = true; grants.delete(source.token); removers.splice(0).forEach(remove => remove()); };
@@ -30,7 +35,7 @@ export function createHelperSourceCapture(api) {
             assert();
             const tab = await api.tabs.get(source.tabId);
             assert();
-            if (tab?.id !== source.tabId || tab.windowId !== windowId || tab.url !== source.url || tab.pendingUrl || tab.status === 'loading') throw stale();
+            if (tab?.id !== source.tabId || tab.windowId !== windowId || tab.url !== source.nativeUrl || tab.pendingUrl || tab.status === 'loading') throw stale();
         }, async dismiss() {
             await guard.check();
             // Chrome offers no compare-and-remove API; this is the final exact
@@ -43,8 +48,8 @@ export function createHelperSourceCapture(api) {
     };
     capture.verify = async message => {
         const guard = grants.get(message?.token);
-        if (!guard || Object.keys(message).length !== 5 || message.type !== 'arcify-helper-source' ||
-            message.tabId !== guard.source.tabId || message.url !== guard.source.url || message.windowId !== guard.windowId) throw stale();
+        if (!guard || Object.keys(message).length !== 6 || message.type !== 'arcify-helper-source' ||
+            message.tabId !== guard.source.tabId || message.url !== guard.source.url || message.nativeUrl !== guard.source.nativeUrl || message.windowId !== guard.windowId) throw stale();
         await guard.check();
         return { live: true };
     };
