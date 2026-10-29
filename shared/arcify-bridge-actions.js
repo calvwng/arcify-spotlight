@@ -15,6 +15,7 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
     return bridge.serializeAction(async () => {
         if (await bridge.getPeerId() !== peerId) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify pairing changed. Search again.');
         const { windowId, tabId } = context;
+        if (context.helper) await context.helper.check();
         const owner = result.metadata?.arcifyBridge;
         const isSearch = result.type === ResultType.SEARCH_QUERY ||
             (result.type === ResultType.AUTOCOMPLETE_SUGGESTION && !result.metadata?.isUrl);
@@ -70,7 +71,7 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
             if (typeof query !== 'string' || !query.trim()) throw new ArcifyBridgeError('INVALID_QUERY', 'Search text is missing.');
             let searchTabId;
             if (mode === SpotlightTabMode.NEW_TAB) {
-                const response = await bridge.request('openTab', windowId, { url: 'about:blank' }, peerId);
+                const response = await bridge.request('openTab', windowId, { url: 'about:blank' }, peerId, ...(context.helper ? [null, context.helper] : []));
                 if (!Number.isSafeInteger(response?.tabId)) throw new ArcifyBridgeError('INVALID_RESPONSE', 'Arcify did not identify the search tab.');
                 searchTabId = response.tabId;
             } else {
@@ -88,6 +89,7 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
             }
             if (await bridge.getPeerId() !== peerId) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify pairing changed before the search. Search again.');
             // One final navigation, using Spotlight's existing search permission.
+            if (context.helper) await context.helper.check();
             await api.search.query({ text: query, tabId: searchTabId });
             return { handled: true, command: 'search', tabId: searchTabId };
         } else {
@@ -107,7 +109,7 @@ export async function handleBridgeResult(bridge, api, result, mode, context) {
         }
         const response = await (command === 'openRoutedTab'
             ? bridge.request(command, windowId, payload, peerId, context.routing)
-            : bridge.request(command, windowId, payload, peerId));
+            : bridge.request(command, windowId, payload, peerId, ...(context.helper ? [null, context.helper] : [])));
         if (!response) throw new ArcifyBridgeError('DISCONNECTED', 'Arcify connection changed. Try again.');
         return { handled: true, command, tabId: response.tabId };
     });

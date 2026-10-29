@@ -73,11 +73,15 @@ describe('Spotlight background bridge seams', () => {
         expect(chromeMock.tabs.update).not.toHaveBeenCalled();
     });
     it.each(['url-suggestion', 'search-query'])('launches %s into a newly selected empty workspace from the helper page', async type => {
-        const helper = { ...sender, url: chromeMock.runtime.getURL('newtab.html') };
+        const url = chromeMock.runtime.getURL('newtab.html');
+        const helper = { ...sender, url, documentLifecycle: 'active', tab: { ...sender.tab, url } };
+        chromeMock.tabs.get.mockResolvedValue({ ...helper.tab });
+        chromeMock.tabs.remove = vi.fn(async () => {});
         let activeSpaceId = 'work';
         chromeMock.runtime.sendMessage.mockImplementation((id, request, callback) => {
             if (request.command === 'activateSpace') activeSpaceId = 'empty';
             const value = respond(request);
+            value.capabilities = ['helperSourceV1'];
             value.snapshot.activeSpaceId = activeSpaceId;
             value.snapshot.spaces.push({ id: 'empty', name: 'Empty', color: 'green', tabIds: [], pinnedTabIds: [], temporaryTabIds: [] });
             if (request.command === 'activateSpace') delete value.tabId;
@@ -87,10 +91,13 @@ describe('Spotlight background bridge seams', () => {
         const activated = await callInternal({ action: 'spotlightHandleResult', result: space, mode: 'new-tab' }, helper);
         expect(activated.success).toBe(true);
         expect(shouldCloseNewTab(space, activated)).toBe(false);
+        expect(chromeMock.tabs.remove).not.toHaveBeenCalled();
         const result = type === 'search-query' ? { type, metadata: { query: 'next search' } } : { type, url: 'https://next.test' };
         const opened = await callInternal({ action: 'spotlightHandleResult', result, mode: 'current-tab' }, helper);
         expect(opened).toMatchObject({ success: true, bridge: true, tabId: 50, sourceTabId: 42 });
-        expect(shouldCloseNewTab(result, opened)).toBe(true);
+        expect(opened.helperDismissalHandled).toBe(true);
+        expect(chromeMock.tabs.remove).toHaveBeenCalledExactlyOnceWith(42);
+        expect(shouldCloseNewTab(result, opened)).toBe(false); // background already closed the validated helper
         expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(peerId, expect.objectContaining({ command: 'openTab', windowId: 2, url: type === 'search-query' ? 'about:blank' : 'https://next.test' }), expect.any(Function));
         expect(chromeMock.runtime.sendMessage.mock.calls.some(([, request]) => request.command === 'navigateTab')).toBe(false);
         expect(chromeMock.tabs.create).not.toHaveBeenCalled();

@@ -29,7 +29,10 @@ function dispatch(listeners, message, sender) {
         if (!pending && !answered) resolve(undefined);
     });
 }
-const source = () => ({ id: OWN, url: sourceUrl, tab: { ...live.find(t => t.id === sourceId) } });
+// Browser-facing identity uses the loaded extension document. The peer's
+// workspace snapshot deliberately retains the logical New Tab projection.
+const source = () => ({ id: OWN, url: sourceUrl, frameId: 0, documentLifecycle: 'active',
+    tab: { ...live.find(t => t.id === sourceId), url: sourceUrl, status: 'complete' } });
 const internal = message => dispatch(backgroundListeners, message, source());
 const rows = () => [...page.resultsContainer.querySelectorAll('[data-result-type="open-tab"]')];
 const shownIds = () => page.selectionManager.results.filter(result => result.type === 'open-tab').map(result => result.metadata.tabId);
@@ -70,15 +73,24 @@ beforeEach(async () => {
     for (const name of ['onCreated', 'onRemoved', 'onDetached', 'onAttached', 'onMoved', 'onUpdated', 'onReplaced', 'onActivated']) chromeMock.tabs[name] = event();
     chromeMock.tabs.query.mockImplementation(async query => live.filter(t => (!query.windowId || t.windowId === query.windowId) && (!query.active || t.active)));
     chromeMock.tabs.get.mockImplementation(async id => {
-        const current = live.find(t => t.id === id); if (!current) throw new Error('Closed tab'); return { ...current };
+        const current = live.find(t => t.id === id); if (!current) throw new Error('Closed tab');
+        return { ...current, ...(id === sourceId ? { url: sourceUrl, status: 'complete' } : {}) };
     });
+    chromeMock.tabs.remove = vi.fn(async id => { closeTab(id); });
     chromeMock.windows.get.mockImplementation(async id => ({ id, type: 'normal', incognito: false }));
     chromeMock.tabs.getCurrent = vi.fn(async () => ({ ...live.find(t => t.id === sourceId) }));
     chromeMock.runtime.sendMessage.mockImplementation((target, request, callback) => {
         if (target === PEER) {
             const response = { type: 'arcify-bridge', version: 1, role: 'arcify', extensionId: PEER, requestId: request.requestId, ok: true,
-                snapshot: snapshot(request.windowId), capabilities: ['openSidebar', ...(savedFavorites === undefined ? [] : ['persistentFavorites'])], ...(request.tabId ? { tabId: request.tabId } : {}) };
-            if (!snapshotHook?.(request, response, callback)) callback(response);
+                snapshot: snapshot(request.windowId), capabilities: ['openSidebar', 'helperSourceV1', ...(savedFavorites === undefined ? [] : ['persistentFavorites'])], ...(request.tabId ? { tabId: request.tabId } : {}) };
+            const respond = () => { if (!snapshotHook?.(request, response, callback)) callback(response); };
+            if (request.helperSource) {
+                dispatch(externalListeners, { type: 'arcify-helper-source', ...request.helperSource, windowId: request.windowId },
+                    { id: PEER, origin: `chrome-extension://${PEER}` }).then(grant => {
+                    expect(grant).toEqual({ live: true });
+                    respond();
+                });
+            } else respond();
             return;
         }
         if (['spotlightLiveTabsChanged', 'spotlightArcifyResultsChanged'].includes(target.action)) return dispatch(pageListeners, target, { id: OWN });
@@ -447,6 +459,8 @@ describe('persistent Favorites in the real new-tab result lifecycle', () => {
         await vi.waitFor(() => expect(bridgeMutations()).toHaveLength(1)); await pause(10);
         expect(bridgeMutations()[0][1]).toMatchObject({ command: 'openFavorite', favoriteId: 'first', windowId: 2 });
         expect(savedFavorites[0].tabId).toBe(30);
+        expect(chromeMock.tabs.remove).toHaveBeenCalledExactlyOnceWith(sourceId);
+        expect(window.close).not.toHaveBeenCalled();
         expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled();
         expect(document.querySelector('[role="status"]')?.textContent || '').not.toContain('invalid');
     });
@@ -461,6 +475,7 @@ describe('persistent Favorites in the real new-tab result lifecycle', () => {
         expect(bridgeMutations()).toHaveLength(1);
         expect(bridgeMutations()[0][1]).toMatchObject({ command: 'openFavorite', windowId: 2, favoriteId: 'first' });
         expect(bridgeMutations()[0][1]).not.toHaveProperty('url');
+        expect(chromeMock.tabs.remove).not.toHaveBeenCalled();
         expect(chromeMock.tabs.create).not.toHaveBeenCalled(); expect(chromeMock.tabs.update).not.toHaveBeenCalled(); expect(window.close).not.toHaveBeenCalled();
     });
     it('revalidates saved Favorites after a mocked cold background-worker restart', async () => {

@@ -1,4 +1,4 @@
-import { ROUTED_OPEN_FEATURE } from './arcify-bridge-protocol.js';
+import { ROUTED_OPEN_FEATURE, HELPER_SOURCE_FEATURE } from './arcify-bridge-protocol.js';
 import { createFavoriteWitness } from './favorite-witness.js';
 /** Versioned, explicitly paired cross-extension transport. No workspace data is persisted. */
 import { BRIDGE_TYPE, BRIDGE_VERSION, GLOBAL_FAVORITES_FEATURE, PAIRING_GENERATION_KEY, PEER_KEY, trustedSender, sendBridgeRequest, isFavoriteUrl } from './arcify-bridge-protocol.js';
@@ -157,7 +157,7 @@ export class ArcifyBridgeClient {
         return trustedSender(sender, peerId);
     }
 
-    async request(command, windowId, payload = {}, expectedPeerId = null, routing = null) {
+    async request(command, windowId, payload = {}, expectedPeerId = null, routing = null, helper = null) {
         const peerId = await this.getPeerId();
         if (expectedPeerId && peerId !== expectedPeerId) fail('DISCONNECTED', 'Arcify pairing changed before the request. Search again.');
         if (!peerId) return null;
@@ -171,9 +171,10 @@ export class ArcifyBridgeClient {
         // once, on old peers' exact unknown-field error. Never replay mutations.
         let hello;
         const routed = command === 'openRoutedTab';
+        if (helper) { await helper.check(); if (helper.windowId !== windowId) fail('STALE_HELPER_SOURCE', 'The helper window changed.'); }
         if (routed && (!routing || routing.source !== payload.source)) fail('INVALID_REQUEST', 'Routed opening requires a live browser-attested source.');
         try {
-            hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE, 'sharedTodayV1', ...(routed ? [ROUTED_OPEN_FEATURE] : [])] },
+            hello = await sendBridgeRequest(peerId, 'hello', { windowId, supportedFeatures: [GLOBAL_FAVORITES_FEATURE, 'sharedTodayV1', ...(routed ? [ROUTED_OPEN_FEATURE] : []), ...(helper ? [HELPER_SOURCE_FEATURE] : [])] },
                 { role: 'arcify', timeout: this.timeoutMs });
         } catch (error) {
             if (error.code !== 'INVALID_REQUEST') throw error;
@@ -200,8 +201,12 @@ export class ArcifyBridgeClient {
         if (routed && !hello.capabilities?.includes(ROUTED_OPEN_FEATURE)) fail('UNSUPPORTED', 'Update Arcify for source-aware opening. No page was opened.');
         if (routed) { await routing.check(); await checkPairing(); routing.assert(); routing.dispatched(); }
         if (command === 'openSharedToday' && !shared) fail('UNSUPPORTED', 'Update Arcify for shared Today.');
-        const response = await sendBridgeRequest(peerId, command, { ...payload, windowId,
-            ...((ordinary || shared || routed) ? { supportedFeatures: [...(ordinary ? [GLOBAL_FAVORITES_FEATURE] : []), ...(shared ? ['sharedTodayV1'] : []), ...(routed ? [ROUTED_OPEN_FEATURE] : [])] } : {}) }, { role: 'arcify', timeout: this.timeoutMs });
+        if (helper) {
+            if (!hello.capabilities?.includes(HELPER_SOURCE_FEATURE)) fail('UNSUPPORTED', 'Update Arcify for safe helper opening. No page was opened.');
+            await helper.check(); await checkPairing(); helper.assert();
+        }
+        const response = await sendBridgeRequest(peerId, command, { ...payload, windowId, ...(helper ? { helperSource: helper.source } : {}),
+            ...((ordinary || shared || routed || helper) ? { supportedFeatures: [...(ordinary ? [GLOBAL_FAVORITES_FEATURE] : []), ...(shared ? ['sharedTodayV1'] : []), ...(routed ? [ROUTED_OPEN_FEATURE] : []), ...(helper ? [HELPER_SOURCE_FEATURE] : [])] } : {}) }, { role: 'arcify', timeout: this.timeoutMs });
         await checkPairing();
         validateSnapshot(response.snapshot, windowId, { allowOrdinaryFavorites: ordinary });
         if (command === 'openSharedToday' && (response.tabId !== payload.tabId || response.ownerWindowId !== payload.ownerWindowId || response.spaceId !== payload.spaceId

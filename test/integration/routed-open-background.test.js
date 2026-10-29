@@ -13,13 +13,14 @@ beforeEach(async()=>{
  tab={id:42,windowId:2,url:sourceUrl,active:true,pinned:false,incognito:false,status:'complete'};
  sender={id:SELF,tab:structuredClone(tab),url:sourceUrl,origin:'https://source.test',frameId:0,documentLifecycle:'active'};
  for(const name of ['onUpdated','onRemoved','onDetached','onReplaced','onActivated'])chromeMock.tabs[name]=event();chromeMock.windows.onRemoved=event();chromeMock.storage.onChanged=event();
- chromeMock.storage.session={get:vi.fn(async()=>({})),set:vi.fn(async()=>{})};
+ chromeMock.tabs.remove = vi.fn(async () => {});
+    chromeMock.storage.session={get:vi.fn(async()=>({})),set:vi.fn(async()=>{})};
  chromeMock.storage.local.get.mockImplementation(async()=>({arcifyBridgePeerId:PEER}));
  chromeMock.tabs.get.mockImplementation(async()=>structuredClone(tab));chromeMock.windows.get.mockResolvedValue({id:2,type:'normal',focused:true,incognito:false});
  chromeMock.runtime.sendMessage.mockImplementation((_id,request,callback)=>{
   commands.push(request);
   if(request.command==='hello'&&helloHook)helloHook();
-  const respond=()=>callback({type:'arcify-bridge',version:1,role:'arcify',requestId:request.requestId,ok:true,extensionId:PEER,snapshot:snapshot(),capabilities:oldPeer?[]:['sourceRoutedOpenV1'],tabId:50});
+  const respond=()=>callback({type:'arcify-bridge',version:1,role:'arcify',requestId:request.requestId,ok:true,extensionId:PEER,snapshot:snapshot(),capabilities:oldPeer?[]:['sourceRoutedOpenV1','helperSourceV1'],tabId:50});
   if(request.command==='openRoutedTab') {
    // Simulate Arcify's independent liveness challenge to the original document.
    chromeMock.runtime.onMessageExternal.callListeners({type:'arcify-routed-source',...request.source,windowId:2},{id:PEER},reply=>{sourceReply=reply;respond();});
@@ -45,7 +46,7 @@ it('production helper, current-tab, saved and search paths retain their existing
  {extra:{},from:{...sender,url:chromeMock.runtime.getURL('newtab.html')},command:'openTab'},
  {extra:{result:{type:'bookmark',url:'https://saved.test/'}},from:sender,command:'openTab'},
  {extra:{result:{type:'search-query',metadata:{query:'hello'}}},from:sender,command:'openTab'}];
- for(const c of cases){commands.length=0;expect((await select(c.extra,c.from)).success).toBe(true);expect(commands.some(r=>r.command===c.command)).toBe(true);expect(commands.some(r=>r.command==='openRoutedTab')).toBe(false);}
+ for(const c of cases){commands.length=0;tab.url=c.from.url;c.from={...c.from,tab:structuredClone(tab)};expect((await select(c.extra,c.from)).success).toBe(true);expect(commands.some(r=>r.command===c.command)).toBe(true);expect(commands.some(r=>r.command==='openRoutedTab')).toBe(false);}
 });
 it('production sender must be an active top document with a native tab',async()=>{
  for(const patch of [{frameId:1},{documentLifecycle:'cached'},{tab:null},{url:'https://forged.test/'}])expect(await select({}, {...sender,...patch})).toMatchObject({success:false,errorCode:'STALE_ROUTING_SOURCE'});

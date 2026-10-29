@@ -16,8 +16,13 @@ function confirmMember(snapshot, context, descriptor, active = false) {
         snapshot.bookmarks.some(item => item.tabId === descriptor.id)) fail('INVALID_RESPONSE', 'Arcify returned conflicting Today tab identity. Refresh Spotlight.');
 }
 export class ArcifySplitActionsClient extends ArcifyTabActionsClient {
-    constructor(...args) { super(...args); this.epoch = 0; }
-    invalidate() { this.epoch++; }
+    constructor(...args) { super(...args); this.epoch = 0; this.globalEpoch = 0; this.windowEpochs = new Map(); }
+    epochFor(windowId) { return this.windowEpochs.get(windowId) ?? this.globalEpoch; }
+    invalidate(windowId = null) {
+        const epoch = ++this.epoch;
+        if (isWindowId(windowId)) this.windowEpochs.set(windowId, epoch);
+        else { this.globalEpoch = epoch; this.windowEpochs.clear(); }
+    }
     async hello(pairing, windowId) {
         let hello;
         for (const features of [FEATURES, [GLOBAL_FAVORITES_FEATURE], null]) {
@@ -30,14 +35,14 @@ export class ArcifySplitActionsClient extends ArcifyTabActionsClient {
         return hello;
     }
     async read(source, expectedScope = null) {
-        const epoch = this.epoch, pairing = await this.pairing();
+        const epoch = this.epochFor(source.windowId), pairing = await this.pairing();
         if (expectedScope && (pairing.peerId !== expectedScope.peerId || pairing.generation !== expectedScope.generation)) fail('DISCONNECTED', 'Arcify pairing changed. Refresh Spotlight.');
         if (expectedScope && expectedScope.epoch !== epoch) stale();
         if (!pairing.peerId) return null;
         const hello = await this.hello(pairing, source.windowId);
         if (!hello.capabilities?.includes(SPLIT_ACTIONS_FEATURE)) return null;
         const response = await this.call(pairing, 'splitActionContext', { windowId: source.windowId, tabId: source.tabId, supportedFeatures: FEATURES });
-        if (epoch !== this.epoch) stale();
+        if (epoch !== this.epochFor(source.windowId)) stale();
         if (!exactKeys(response, [...ENVELOPE, 'extensionId', 'snapshot', 'splitActionContext', 'splitTargets']) || response.extensionId !== pairing.peerId)
             fail('INVALID_RESPONSE', 'Arcify did not confirm the Split context.');
         const snapshot = validateSnapshot(response.snapshot, source.windowId, { allowOrdinaryFavorites: hello.capabilities.includes(GLOBAL_FAVORITES_FEATURE) });
@@ -66,7 +71,7 @@ export class ArcifySplitActionsClient extends ArcifyTabActionsClient {
             const stored = await this.api.storage.local.get([PEER_KEY, PAIRING_GENERATION_KEY]);
             if ((stored[PEER_KEY] || null) !== fresh.peerId || (stored[PAIRING_GENERATION_KEY] ?? null) !== fresh.generation)
                 fail('DISCONNECTED', 'Arcify pairing changed. Refresh Spotlight.');
-            if (fresh.epoch !== this.epoch) stale();
+            if (fresh.epoch !== this.epochFor(source.windowId)) stale();
             // Mutations are sent once. Native events caused by this operation may
             // advance the epoch; only the exact receipt may establish success.
             const response = await this.send(fresh.peerId, command, { ...payload, windowId: source.windowId, supportedFeatures: FEATURES }, { role: 'arcify', timeout: this.bridge.timeoutMs });
@@ -102,20 +107,29 @@ export function installArcifySplitActionMessages(api, bridge) {
         if (area === 'local' && [PEER_KEY, PAIRING_GENERATION_KEY].some(key => Object.hasOwn(changes, key))) client.invalidate();
     });
     // Conservatively retire captured views even if a native change is reverted.
-    for (const name of ['onCreated', 'onRemoved', 'onActivated', 'onAttached', 'onDetached', 'onMoved', 'onReplaced']) listen(api.tabs[name], () => client.invalidate());
-    listen(api.tabs.onUpdated, (id, change) => { if (['status', 'url', 'title', 'pinned', 'groupId', 'splitViewId'].some(key => Object.hasOwn(change, key))) client.invalidate(); });
+    listen(api.tabs.onCreated, tab => client.invalidate(tab?.windowId));
+    listen(api.tabs.onRemoved, (id, info) => client.invalidate(info?.windowId));
+    listen(api.tabs.onActivated, info => client.invalidate(info?.windowId));
+    listen(api.tabs.onAttached, (id, info) => client.invalidate(info?.newWindowId));
+    listen(api.tabs.onDetached, (id, info) => client.invalidate(info?.oldWindowId));
+    listen(api.tabs.onMoved, (id, info) => client.invalidate(info?.windowId));
+    // A replacement's old window is not supplied by Chrome: retire all views.
+    listen(api.tabs.onReplaced, () => client.invalidate());
+    listen(api.tabs.onUpdated, (id, change, tab) => { if (['status', 'url', 'title', 'pinned', 'groupId', 'splitViewId'].some(key => Object.hasOwn(change, key))) client.invalidate(tab?.windowId); });
     listen(api.windows?.onFocusChanged, () => client.invalidate());
-    listen(api.tabGroups?.onUpdated, () => client.invalidate());
+    listen(api.tabGroups?.onUpdated, group => client.invalidate(group?.windowId));
     const listener = (message, sender, respond) => {
         if (!['arcifySplitActionsContext', 'arcifySplitAction'].includes(message?.action)) return false;
         (async () => {
             try {
                 const keys = message.action === 'arcifySplitActionsContext' ? ['action'] : ['action', 'command', 'scope', 'fields'];
                 if (!exactKeys(message, [...keys, ...(Object.hasOwn(message, 'tabId') ? ['tabId'] : [])])) fail('INVALID_REQUEST', 'Invalid Spotlight Split request.');
-                const epoch = client.epoch, source = await resolveSplitActionSource(api, message, sender);
+                const beforeSource = client.epoch, source = await resolveSplitActionSource(api, message, sender);
+                const epoch = client.epochFor(source.windowId);
+                if (epoch > beforeSource) stale();
                 const checkSource = async () => {
                     const live = await resolveSplitActionSource(api, message, sender);
-                    if (!sameSplitContext(live, source) || epoch !== client.epoch) stale();
+                    if (!sameSplitContext(live, source) || epoch !== client.epochFor(source.windowId)) stale();
                 };
                 if (message.action === 'arcifySplitActionsContext') {
                     const scope = await client.read(source); await checkSource(); respond({ success: true, scope });
