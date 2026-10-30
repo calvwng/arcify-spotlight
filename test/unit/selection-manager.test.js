@@ -309,3 +309,58 @@ describe('SelectionManager', () => {
         });
     });
 });
+
+describe('async selection preservation', () => {
+    const container = () => ({ querySelectorAll: () => [], contains: () => true });
+    const space = (id, score) => ({ type: 'arcify-space', title: 'Work', score,
+        metadata: { matchScore: score, arcifyBridge: { kind: 'space', peerId: 'peer', windowId: 2, spaceId: id } } });
+    it('preserves identity across object replacement, enrichment, ranking and score changes', () => {
+        const manager = new SelectionManager(container());
+        manager.updateResults([space('work', 0.8)]);
+        const replacement = space('work', 0.95);
+        manager.updateResults([space('other', 1), replacement], { preserveSelection: true });
+        expect(manager.getSelectedResult()).toBe(replacement);
+    });
+    it('does not confuse identical URL tab instances or different window/peer workspace identities', () => {
+        const manager = new SelectionManager(container());
+        const tab = id => ({ type: 'open-tab', url: 'chrome://newtab/', metadata: { tabId: id } });
+        manager.updateResults([tab(1)]);
+        manager.updateResults([tab(2)], { preserveSelection: true });
+        expect(manager.getSelectedResult()).toBeNull();
+        manager.updateResults([space('work', 1)]);
+        const elsewhere = space('work', 1); elsewhere.metadata.arcifyBridge.windowId = 3;
+        manager.updateResults([elsewhere], { preserveSelection: true });
+        expect(manager.getSelectedResult()).toBeNull();
+    });
+    it('keeps the same tab identity across pin changes and same-window workspace moves', () => {
+        const manager = new SelectionManager(container());
+        manager.updateResults([{ type: 'open-tab', metadata: { tabId: 7 } }]);
+        const pinned = { type: 'pinned-tab', metadata: { tabId: 7 } };
+        manager.updateResults([pinned], { preserveSelection: true });
+        expect(manager.getSelectedResult()).toBe(pinned);
+        const bridgeTab = space('work', 1);
+        bridgeTab.type = 'open-tab'; bridgeTab.metadata.arcifyBridge.kind = 'tab'; bridgeTab.metadata.arcifyBridge.tabId = 7;
+        manager.updateResults([bridgeTab]);
+        const moved = { ...bridgeTab, metadata: { arcifyBridge: { ...bridgeTab.metadata.arcifyBridge, spaceId: 'home' } } };
+        manager.updateResults([moved], { preserveSelection: true });
+        expect(manager.getSelectedResult()).toBe(moved);
+    });
+    it('holds no selection after a chosen result disappears until fresh navigation or input', () => {
+        const manager = new SelectionManager(container());
+        manager.updateResults([space('work', 1)]);
+        manager.updateResults([space('other', 1)], { preserveSelection: true });
+        expect(manager.selectedIndex).toBe(-1);
+        manager.updateResults([space('work', 1)], { preserveSelection: true });
+        expect(manager.selectedIndex).toBe(-1);
+        manager.moveSelection('down');
+        expect(manager.selectedIndex).toBe(0);
+    });
+    it.each(['ArrowUp', 'Home', 'ArrowDown', 'End'])('records explicit %s intent even without an index change', key => {
+        const onChange = vi.fn(), onNavigation = vi.fn();
+        const manager = new SelectionManager(container(), onChange, onNavigation);
+        manager.updateResults([space('work', 1)]);
+        manager.handleKeyDown({ key, preventDefault() {}, stopPropagation() {} }, true);
+        expect(onNavigation).toHaveBeenCalledOnce();
+        expect(onChange).not.toHaveBeenCalled();
+    });
+});

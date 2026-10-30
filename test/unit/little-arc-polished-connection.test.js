@@ -1,0 +1,22 @@
+import {JSDOM} from 'jsdom';
+import {it} from 'vitest';
+import {installPeekContent} from '../../shared/peek-content.js';
+import assert from 'node:assert/strict';import fs from 'node:fs';
+const event=()=>{const callbacks=new Set();return {addListener:fn=>callbacks.add(fn),removeListener:fn=>callbacks.delete(fn),emit:(...args)=>{for(const fn of callbacks)fn(...args);}};};
+it.each(['Extension context invalidated.','Temporary storage service unavailable'])('explicit connection failure feedback: %s',async failure=>{
+ const dom=new JSDOM('<!doctype html><a id="link" href="https://example.test/target">target</a>',{url:'https://source.test/',pretendToBeVisual:true}),window=dom.window,document=window.document;
+ Object.defineProperty(document,'hasFocus',{value:()=>true});
+ const shadows=new WeakMap(),attach=window.HTMLElement.prototype.attachShadow;
+ window.HTMLElement.prototype.attachShadow=function(options){const root=attach.call(this,options);shadows.set(this,root);return root;};
+ const handlers=new Map(),add=document.addEventListener.bind(document);document.addEventListener=(name,fn,...rest)=>{if(name==='click')handlers.set(name,fn);add(name,fn,...rest);};
+ let broken=false,connects=0;const sent=[];
+ const port={onDisconnect:event(),onMessage:event(),postMessage:m=>sent.push(m.kind),disconnect(){}};
+ const api={runtime:{id:'a'.repeat(32),lastError:null,onMessage:event(),getURL:p=>'chrome-extension://'+'a'.repeat(32)+'/'+p,connect:()=>{connects++;return port;}},storage:{local:{get:async()=>{if(broken)throw Error(failure);return {peekEnabled:true,peekIframeEnabled:false};}},onChanged:event()}};
+ const content=installPeekContent({api,document,window});for(let i=0;i<20;i++)await Promise.resolve();port.onMessage.emit({kind:'ready'});
+ broken=true;port.onDisconnect.emit();let prevented=false,stopped=false;
+ const link=document.getElementById('link');handlers.get('click')({isTrusted:true,defaultPrevented:false,button:0,shiftKey:true,ctrlKey:false,metaKey:false,altKey:false,detail:1,composedPath:()=>[link],preventDefault:()=>prevented=true,stopImmediatePropagation:()=>stopped=true});
+ for(let i=0;i<30;i++)await Promise.resolve();
+ const host=document.getElementById('arcify-shift-link-status'),message=shadows.get(host)?.textContent;
+ assert.equal(message,failure==='Extension context invalidated.'?'The extension was updated. Reload this page once, or use the Little Arc link context menu. Nothing was opened.':'Little Arc connection unavailable. Nothing was opened. Try Shift-click again.');assert(prevented&&stopped);assert(!sent.some(k=>k==='launch'||k==='open'));
+ content.dispose();dom.window.close();
+});

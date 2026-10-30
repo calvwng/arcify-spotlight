@@ -14,6 +14,8 @@
 
 import { ResultType, SpotlightTabMode } from './search-types.js';
 import { Logger } from '../logger.js';
+import { isSafeUrl } from './arcify-bridge-protocol.js';
+import { normalizeBrowserPageUrl } from './browser-page-url.js';
 
 // Search Engine with caching
 export class SearchEngine {
@@ -103,6 +105,15 @@ export class SearchEngine {
     // Handle result action
     async handleResultAction(result, mode, currentTabId = null) {
         try {
+            // Standalone submission shares the paired navigation boundary. Live
+            // tab activation stays identity-based and may activate extension UI.
+            const navigatesUrl = [ResultType.URL_SUGGESTION, ResultType.AUTOCOMPLETE_SUGGESTION,
+                ResultType.BOOKMARK, ResultType.HISTORY, ResultType.TOP_SITE].includes(result.type) ||
+                [ResultType.OPEN_TAB, ResultType.PINNED_TAB].includes(result.type) && mode !== SpotlightTabMode.NEW_TAB;
+            if (navigatesUrl && result.url) {
+                if (!isSafeUrl(result.url)) throw new Error('This address cannot be opened. Use a supported web or browser page URL.');
+                result = { ...result, url: normalizeBrowserPageUrl(result.url) ?? result.url };
+            }
             switch (result.type) {
                 case ResultType.OPEN_TAB:
                     if (mode === SpotlightTabMode.NEW_TAB) {
@@ -156,7 +167,7 @@ export class SearchEngine {
                     break;
 
                 case ResultType.PINNED_TAB:
-                    // Chrome-pinned tabs (Arcify "favorites") — same switch logic as OPEN_TAB
+                    // Native Chrome-pinned tabs — same switch logic as OPEN_TAB
                     if (mode === SpotlightTabMode.NEW_TAB) {
                         if (!result.metadata?.tabId) {
                             throw new Error('PINNED_TAB result missing tabId in metadata');

@@ -328,7 +328,7 @@ describe('SpotlightUtils.formatResult - Arcify action text', () => {
         expect(formatted.action).toBe('\u21b5');
     });
 
-    it('PINNED_TAB always shows "Open Favorite Tab" regardless of isActive', () => {
+    it('PINNED_TAB always shows "Open Pinned Tab" regardless of isActive', () => {
         const result = new SearchResult({
             type: ResultType.PINNED_TAB,
             title: 'GitHub',
@@ -337,10 +337,10 @@ describe('SpotlightUtils.formatResult - Arcify action text', () => {
         });
 
         const formatted = SpotlightUtils.formatResult(result, SpotlightTabMode.CURRENT_TAB);
-        expect(formatted.action).toBe('Open Favorite Tab');
+        expect(formatted.action).toBe('Open Pinned Tab');
     });
 
-    it('PINNED_TAB with isActive false and isArcify true shows "Open Favorite Tab"', () => {
+    it('PINNED_TAB with isActive false and isArcify true shows "Open Pinned Tab"', () => {
         const result = new SearchResult({
             type: ResultType.PINNED_TAB,
             title: 'GitHub',
@@ -349,10 +349,10 @@ describe('SpotlightUtils.formatResult - Arcify action text', () => {
         });
 
         const formatted = SpotlightUtils.formatResult(result, SpotlightTabMode.CURRENT_TAB);
-        expect(formatted.action).toBe('Open Favorite Tab');
+        expect(formatted.action).toBe('Open Pinned Tab');
     });
 
-    it('PINNED_TAB without isArcify still shows "Open Favorite Tab"', () => {
+    it('PINNED_TAB without isArcify still shows "Open Pinned Tab"', () => {
         const result = new SearchResult({
             type: ResultType.PINNED_TAB,
             title: 'Test',
@@ -361,7 +361,7 @@ describe('SpotlightUtils.formatResult - Arcify action text', () => {
         });
 
         const formatted = SpotlightUtils.formatResult(result, SpotlightTabMode.CURRENT_TAB);
-        expect(formatted.action).toBe('Open Favorite Tab');
+        expect(formatted.action).toBe('Open Pinned Tab');
     });
 
     it('BOOKMARK with isArcify in current space shows "Open Pinned Tab"', () => {

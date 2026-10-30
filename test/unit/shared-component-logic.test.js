@@ -420,7 +420,7 @@ describe('SharedSpotlightLogic', () => {
             const button = container.querySelector('.arcify-spotlight-result-item');
             button.click();
 
-            expect(mockOnClick).toHaveBeenCalledWith(mockResults[1], 1);
+            expect(mockOnClick).toHaveBeenCalledWith(mockResults[1], 1, expect.any(Event));
         });
 
         it('handles clicks on child elements within result item', () => {
@@ -432,7 +432,7 @@ describe('SharedSpotlightLogic', () => {
             const span = container.querySelector('span');
             span.click();
 
-            expect(mockOnClick).toHaveBeenCalledWith(mockResults[0], 0);
+            expect(mockOnClick).toHaveBeenCalledWith(mockResults[0], 0, expect.any(Event));
         });
 
         it('does not call onResultClick when click target is not a result item', () => {
@@ -645,7 +645,7 @@ describe('SharedSpotlightLogic', () => {
             firstResult.click();
 
             // Step 5: Verify callback
-            expect(onResultClick).toHaveBeenCalledWith(mockResults[0], 0);
+            expect(onResultClick).toHaveBeenCalledWith(mockResults[0], 0, expect.any(Event));
 
             document.body.removeChild(container);
         });

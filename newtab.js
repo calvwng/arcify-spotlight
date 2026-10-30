@@ -1,3 +1,5 @@
+import { TransientActionController, isTransientActionResult } from './shared/arcify-transient-actions-ui.js';
+import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
  * New Tab Spotlight - Standalone spotlight page for new tab override
  * 
@@ -12,6 +14,16 @@ import { SpotlightMessageClient } from './shared/message-client.js';
 import { SpotlightTabMode } from './shared/search-types.js';
 import { SharedSpotlightLogic } from './shared/shared-component-logic.js';
 import { Logger } from './logger.js';
+import { mountBridgeStatus } from './shared/bridge-status-ui.js';
+import { shouldCloseNewTab } from './shared/bridge-navigation-ui.js';
+import { SidebarCommandController, isSidebarResult } from './shared/arcify-sidebar-command.js';
+import { TabActionController, isTabActionResult } from './shared/arcify-tab-actions-ui.js';
+import { ArchiveActionController, isArchiveResult } from './shared/arcify-archive-actions-ui.js';
+import { SplitActionController, isSplitActionResult } from './shared/arcify-split-actions-ui.js';
+import { SpaceActionController, isSpaceActionResult } from './shared/arcify-space-actions-ui.js';
+import { mountLiveTabResults, isTabResultRemoved } from './shared/live-tab-results.js';
+import { mountStartupSidebarSuggestion } from './shared/startup-sidebar-suggestion.js';
+import { mountActiveNewTabReuse } from './shared/active-newtab-reuse.js';
 
 // Initialize spotlight on page load
 // Initialize spotlight on page load
@@ -40,7 +52,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await initializeSpotlight();
 });
 
-async function initializeSpotlight() {
+export async function initializeSpotlight() {
     const container = document.getElementById('spotlight-container');
 
     // Start with default color - will update asynchronously
@@ -283,31 +295,47 @@ async function initializeSpotlight() {
     // Get references to key elements
     const input = container.querySelector('.arcify-spotlight-input');
     const resultsContainer = container.querySelector('.arcify-spotlight-results');
+    const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement, { input });
+    let actionPending = false;
+    let disposed = false;
+    let initialResultsReady = false;
+    let manuallySelected = false;
+    let selectionInvalidated = false;
+    const archiveDefaultRefresh = new ArchiveDefaultRefresh();
+    let startupSuggestion;
+    let sidebarCommand;
+    let spaceActions;
+    let tabActions;
+    let archiveActions;
+    let splitActions;
+    let transientActions;
 
     // Initialize spotlight state
     let currentResults = [];
+    let typedQuery = ''; // Genuine input only; keyboard URL/title previews do not change the search.
     let instantSuggestion = null;
     let asyncSuggestions = [];
     let searchQueryId = 0; // Query generation counter for stale response protection (PERF-03)
 
     // Send get suggestions message to background script
     // Use 'current-tab' mode so navigation happens in the current tab (the new tab page itself)
-    async function sendGetSuggestionsMessage(query, mode) {
-        return await SpotlightMessageClient.getSuggestions(query, mode);
+    async function sendGetSuggestionsMessage(query, mode, bridgeRefresh) {
+        return await SpotlightMessageClient.getSuggestions(query, mode, bridgeRefresh);
     }
 
     // Handle result action via message passing
     // Use 'current-tab' mode so navigation happens in the current tab (the new tab page itself)
     async function handleResultActionViaMessage(result, mode) {
-        return await SpotlightMessageClient.handleResult(result, mode);
+        return await SpotlightMessageClient.handleResultDetailed(result, mode);
     }
-
-    // Flag to track selection-driven input changes (should not trigger search)
-    let isSelectionDrivenChange = false;
 
     // URL preview callback - updates input value with selected result URL
     const handleSelectionChange = (result, index) => {
-        isSelectionDrivenChange = true;
+        selectionInvalidated = false;
+        archiveDefaultRefresh.reset();
+        manuallySelected = true;
+        startupSuggestion?.cancel();
+        if (isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result) || isTransientActionResult(result)) return;
         if (result && result.metadata && result.metadata.query) {
             // For search/autocomplete suggestions, use the query
             input.value = result.metadata.query;
@@ -318,20 +346,67 @@ async function initializeSpotlight() {
         } else {
             input.value = '';
         }
-        // Flag will be checked and reset by the input handler
     };
 
-    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange);
+    const selectionManager = new SelectionManager(resultsContainer, handleSelectionChange, () => {
+        manuallySelected = true;
+        selectionInvalidated = false;
+        startupSuggestion?.cancel();
+    });
+    sidebarCommand = new SidebarCommandController({ newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => { if (!sidebarCommand?.peerId) startupSuggestion?.cancel(); updateDisplay(); } });
+    startupSuggestion = mountStartupSidebarSuggestion({ document, input, controller: sidebarCommand,
+        isReady: () => initialResultsReady && !disposed,
+        select: () => { manuallySelected = false; updateDisplay(); },
+        clearSelection: () => { manuallySelected = false; selectionManager.selectedIndex = -1; selectionManager.updateVisualSelection(); } });
+    spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    splitActions = new SplitActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    transientActions = new TransientActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    const liveResults = mountLiveTabResults({
+        isActive: () => !disposed,
+        onInvalidate: removedTabIds => {
+            searchQueryId++;
+            splitActions.invalidate();
+            transientActions.invalidate();
+            if (isTabResultRemoved(selectionManager.getSelectedResult(), removedTabIds)) selectionInvalidated = true;
+            asyncSuggestions = asyncSuggestions.filter(result => !isTabResultRemoved(result, removedTabIds));
+            updateDisplay();
+        },
+        onRefresh: bridgeRefresh => { spaceActions.ready = spaceActions.prepare(); tabActions.ready = tabActions.prepare(); archiveActions.ready = archiveActions.prepare(); splitActions.ready = splitActions.prepare(); transientActions.ready = transientActions.prepare(); return typedQuery ? handleAsyncSearch(bridgeRefresh) : loadInitialResults(bridgeRefresh); }
+    });
+    const activeNewTabReuse = mountActiveNewTabReuse({ isReady: () => !disposed && container.isConnected });
+    const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        searchQueryId++;
+        startupSuggestion.dispose();
+        sidebarCommand.dispose();
+        spaceActions.dispose();
+        tabActions.dispose();
+        archiveActions.dispose();
+        splitActions.dispose();
+        transientActions.dispose();
+        liveResults.dispose();
+        activeNewTabReuse.dispose();
+        bridgeStatus.dispose();
+    };
+    window.addEventListener('pagehide', dispose, { once: true });
 
     // Load initial results
     // Use 'current-tab' mode since we're on the new tab page itself
-    async function loadInitialResults() {
+    async function loadInitialResults(bridgeRefresh) {
+        const queryId = ++searchQueryId;
         try {
             instantSuggestion = null;
-            const results = await sendGetSuggestionsMessage('', 'current-tab');
+            const results = await sendGetSuggestionsMessage('', 'current-tab', bridgeRefresh);
+            if (disposed || queryId !== searchQueryId || typedQuery) return;
+            initialResultsReady = true;
             asyncSuggestions = results || [];
             updateDisplay();
         } catch (error) {
+            if (disposed || queryId !== searchQueryId || typedQuery) return;
+            initialResultsReady = true;
             Logger.error('[NewTab Spotlight] Error loading initial results:', error);
             instantSuggestion = null;
             asyncSuggestions = [];
@@ -341,10 +416,16 @@ async function initializeSpotlight() {
 
     // Handle instant suggestion update (no debouncing)
     function handleInstantInput() {
-        const query = input.value.trim();
+        if (disposed) return;
+        searchQueryId++; // Cancel in-flight results as soon as the input changes.
+        typedQuery = input.value.trim();
+        const query = typedQuery;
+        asyncSuggestions = []; // Never promote or activate stale matches for a new query.
 
         if (!query) {
             instantSuggestion = null;
+            asyncSuggestions = [];
+            updateDisplay();
             loadInitialResults();
             return;
         }
@@ -357,8 +438,9 @@ async function initializeSpotlight() {
     // Phase 1: Local results render immediately (~10-50ms)
     // Phase 2: Autocomplete appends when ready (~200-500ms)
     // Stale queries are discarded via query generation counter
-    async function handleAsyncSearch() {
-        const query = input.value.trim();
+    async function handleAsyncSearch(bridgeRefresh) {
+        if (disposed || actionPending) return;
+        const query = typedQuery;
         const queryId = ++searchQueryId;
 
         if (!query) {
@@ -369,18 +451,18 @@ async function initializeSpotlight() {
 
         try {
             // Phase 1: Local results (fast)
-            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, 'current-tab');
-            if (queryId !== searchQueryId) return; // Stale query -- discard
+            const localResults = await SpotlightMessageClient.getLocalSuggestions(query, 'current-tab', bridgeRefresh);
+            if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
             asyncSuggestions = localResults || [];
             updateDisplay();
 
             // Phase 2: Autocomplete results (slow, network)
             const autocompleteResults = await SpotlightMessageClient.getAutocompleteSuggestions(query);
-            if (queryId !== searchQueryId) return; // Stale query -- discard
+            if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
 
             if (autocompleteResults && autocompleteResults.length > 0) {
-                const allResults = await SpotlightMessageClient.getSuggestions(query, 'current-tab');
-                if (queryId !== searchQueryId) return; // Stale query -- discard
+                const allResults = await SpotlightMessageClient.getSuggestions(query, 'current-tab', bridgeRefresh);
+                if (disposed || queryId !== searchQueryId) return; // Stale query -- discard
                 asyncSuggestions = allResults || [];
                 updateDisplay();
             }
@@ -395,52 +477,87 @@ async function initializeSpotlight() {
 
     // Combine instant and async suggestions with deduplication
     function combineResults() {
-        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions);
+        const command = sidebarCommand?.result(typedQuery);
+        return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
+            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery,
+            preferredAction: startupSuggestion?.selected ? command : null
+        });
     }
 
     // Update the display with combined results
     function updateDisplay() {
+        if (disposed) return;
+        const previousResults = currentResults;
+        const previous = selectionManager.getSelectedResult();
+        const refreshingArchiveDefault = archiveDefaultRefresh.capture(previous, archiveActions, {
+            query: typedQuery, manual: manuallySelected, invalidated: selectionInvalidated,
+            focusedResult: resultsContainer.contains(selectionManager.getActiveElement())
+        });
+        if (isSidebarResult(previous) && !sidebarCommand?.peerId || isSpaceActionResult(previous) && !spaceActions?.matches(previous) || isTabActionResult(previous) && !tabActions?.matches(previous) || isArchiveResult(previous) && !archiveActions?.matches(previous) && !refreshingArchiveDefault || isSplitActionResult(previous) && !splitActions?.matches(previous) || isTransientActionResult(previous) && !transientActions?.matches(previous)) selectionInvalidated = true;
         currentResults = combineResults();
-        selectionManager.updateResults(currentResults);
+        selectionManager.updateResults(currentResults, { preserveSelection: manuallySelected });
+        if (!manuallySelected && !typedQuery && !startupSuggestion?.selected && (isSidebarResult(currentResults[0]) || isSpaceActionResult(currentResults[0]) || isTabActionResult(currentResults[0]) || isArchiveResult(currentResults[0]) || isSplitActionResult(currentResults[0]) || isTransientActionResult(currentResults[0]))) selectionManager.selectedIndex = -1;
+        const archiveSelection = archiveDefaultRefresh.resolve(currentResults, archiveActions);
+        if (archiveSelection) {
+            selectionManager.selectedIndex = archiveSelection.index;
+            if (archiveSelection.invalidated) selectionInvalidated = true;
+        }
+        // A failed/revoked command or removed tab must not expose another action to
+        // held Enter or a later async refresh. Fresh input/navigation can select again.
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
 
         if (currentResults.length === 0) {
-            displayEmptyState();
+            displayEmptyState(previousResults);
             return;
         }
 
         // Use 'new-tab' mode for display so OPEN_TAB shows "Switch to Tab"
-        SharedSpotlightLogic.updateResultsDisplay(resultsContainer, [], currentResults, 'new-tab', activeGroupName);
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, currentResults, 'new-tab', activeGroupName, input)) {
+            selectionInvalidated = true;
+            selectionManager.selectedIndex = -1;
+        }
+        selectionManager.updateVisualSelection();
     }
 
     // Display empty state
-    function displayEmptyState() {
-        resultsContainer.innerHTML = '<div class="arcify-spotlight-empty">Start typing to search tabs, bookmarks, and history</div>';
+    function displayEmptyState(previousResults = currentResults) {
+        if (disposed) return;
+        if (SharedSpotlightLogic.updateResultsDisplay(resultsContainer, previousResults, [], 'new-tab', activeGroupName, input)) selectionInvalidated = true;
         currentResults = [];
         instantSuggestion = null;
         asyncSuggestions = [];
         selectionManager.updateResults([]);
+        if (selectionInvalidated) selectionManager.selectedIndex = -1;
     }
 
     // Create the base input handler once (with debouncing)
     const baseInputHandler = SharedSpotlightLogic.createInputHandler(
         handleInstantInput,
-        handleAsyncSearch,
+        () => handleAsyncSearch(),
         150
     );
 
-    // Input event handler - skip search for selection-driven changes
+    // Input events are actual query changes; URL previews only assign .value.
     input.addEventListener('input', (e) => {
-        if (isSelectionDrivenChange) {
-            // Reset flag and skip search - this was a selection preview update
-            isSelectionDrivenChange = false;
-            return;
-        }
-        // User typed something - trigger search
+        archiveDefaultRefresh.reset();
+        selectionInvalidated = false;
+        manuallySelected = false;
+        startupSuggestion.cancel();
+        // Programmatic .value previews do not fire input; every input event is a query change.
         baseInputHandler(e);
     });
 
     // Handle result selection
-    async function handleResultAction(result) {
+    async function handleResultAction(result, event) {
+        if (actionPending || bridgeStatus.settingsActions.pending || spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
+        if (bridgeStatus.settingsActions.invoke(result, event)) return;
+        if (sidebarCommand.invoke(result, event)) return;
+        if (spaceActions.invoke(result, event)) return;
+        if (tabActions.invoke(result, event)) return;
+        if (archiveActions.invoke(result, event)) return;
+        if (splitActions.invoke(result, event)) return;
+        if (transientActions.invoke(result, event)) return;
+        startupSuggestion.cancel();
         if (!result) {
             Logger.error('[NewTab Spotlight] No result provided');
             return;
@@ -449,30 +566,46 @@ async function initializeSpotlight() {
         try {
             // For tab results, use 'new-tab' mode to switch to existing tab
             // For other results, use 'current-tab' mode to navigate this page
-            const isTabSwitch = (result.type === 'open-tab' || result.type === 'pinned-tab');
+            if (actionPending) return;
+            actionPending = true;
+            baseInputHandler.cancel();
+            searchQueryId++; // Freeze this choice; discard in-flight ranking.
+            const isTabSwitch = (result.type === 'open-tab' || result.type === 'pinned-tab' || Boolean(result.metadata?.arcifyBridge));
             const mode = isTabSwitch ? 'new-tab' : 'current-tab';
-            await handleResultActionViaMessage(result, mode);
+            const response = await handleResultActionViaMessage(result, mode);
+            if (!response.success) liveResults.handleActionFailure(result, response);
 
             // Close this new tab page after switching to another tab
-            if (isTabSwitch) {
+            if (shouldCloseNewTab(result, response)) {
                 window.close();
             }
         } catch (error) {
             Logger.error('[NewTab Spotlight] Error in result action:', error);
+            bridgeStatus.showError(error.message);
+        } finally {
+            actionPending = false;
         }
     }
 
     // Keyboard navigation
     input.addEventListener('keydown', SharedSpotlightLogic.createKeyDownHandler(
         selectionManager,
-        (selected) => handleResultAction(selected),
+        (selected, event) => handleResultAction(selected, event),
         () => { } // No escape handler needed on new tab page
     ));
 
     // Handle clicks on results
     SharedSpotlightLogic.setupResultClickHandling(
         resultsContainer,
-        (result, index) => handleResultAction(result),
+        (result, index, event) => {
+            if ((isSidebarResult(result) || isSpaceActionResult(result) || isTabActionResult(result) || isArchiveResult(result) || isSplitActionResult(result) || isTransientActionResult(result)) && event?.isTrusted !== true) return;
+            selectionInvalidated = false;
+            manuallySelected = true;
+            selectionManager.selectedIndex = index;
+            selectionManager.updateVisualSelection();
+            startupSuggestion.cancel();
+            return handleResultAction(result, event);
+        },
         () => currentResults
     );
 
@@ -503,6 +636,7 @@ async function initializeSpotlight() {
         }
 
         // Load initial results
-        loadInitialResults();
+        if (!disposed && !input.value.trim()) loadInitialResults();
     })();
+    return { dispose, sidebarCommand, spaceActions, tabActions, archiveActions, splitActions, transientActions, startupSuggestion, selectionManager, input, resultsContainer };
 }

@@ -5,6 +5,8 @@
   "description": "Arc Browser (Spotlight)-like experience for your URL bar, including auto-complete, history, bookmarks and more",
   "permissions": [
     "tabs",
+    "activeTab",
+    "scripting",
     "tabGroups",
     "storage",
     "bookmarks",
@@ -16,6 +18,10 @@
   ],
   "chrome_url_overrides": {
     "newtab": "newtab.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "background": {
     "service_worker": "background.js",
@@ -31,6 +37,12 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["peek-preview-observer.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [
@@ -45,6 +57,16 @@
       ],
       "extension_ids": [
         "*"
+      ]
+    },
+    {
+      "resources": [
+        "little-arc-header.html",
+        "peek-wrapper.html"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
       ]
     }
   ],

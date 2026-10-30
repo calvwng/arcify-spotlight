@@ -1,3 +1,4 @@
+import { isTransientActionResult } from './arcify-transient-actions-protocol.js';
 /**
  * Shared Component Logic - Common functionality between overlay.js and popup.js
  * 
@@ -13,6 +14,18 @@
  */
 
 import { SpotlightUtils } from './ui-utilities.js';
+import { ResultType } from './search-types.js';
+import { isSplitActionResult } from './arcify-split-actions-protocol.js';
+import { isArchiveResult } from './arcify-archive-actions-protocol.js';
+import { isTabActionResult } from './arcify-tab-actions-protocol.js';
+import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
+import { resultIdentity } from './selection-manager.js';
+
+export const isActionResult = result => result?.type === 'spotlight-settings-action' || isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+    (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
+
+const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
+    ? result.metadata.matchScore : 0;
 
 export class SharedSpotlightLogic {
 
@@ -22,22 +35,43 @@ export class SharedSpotlightLogic {
      * @param {Array} asyncSuggestions - Array of async suggestion results
      * @returns {Array} Combined and deduplicated results
      */
-    static combineResults(instantSuggestion, asyncSuggestions) {
+    static combineResults(instantSuggestion, asyncSuggestions, { actions = [], query = '', preferredAction = null } = {}) {
         const combined = [];
 
         // Add instant suggestion first (if exists)
-        if (instantSuggestion) {
+        const bookmarkRepresentsInstant = instantSuggestion?.type === ResultType.URL_SUGGESTION &&
+            asyncSuggestions.some(result => result.metadata?.bookmarkFallback && result.url === instantSuggestion.url);
+        if (instantSuggestion && !bookmarkRepresentsInstant) {
             combined.push(instantSuggestion);
         }
 
         // Add async suggestions, filtering out duplicates of the instant suggestion
         for (const asyncResult of asyncSuggestions) {
-            const isDuplicate = instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
+            const isDuplicate = !asyncResult.metadata?.arcifyBridge && !asyncResult.metadata?.bookmarkFallback && instantSuggestion && SpotlightUtils.areResultsDuplicate(instantSuggestion, asyncResult);
             if (!isDuplicate) {
                 combined.push(asyncResult);
             }
         }
 
+        combined.push(...actions);
+        // A complete URL keeps its normal primary action. Little Arc is an
+        // explicit secondary choice, ahead of unrelated async suggestions.
+        if (instantSuggestion?.type === ResultType.URL_SUGGESTION && combined[0] === instantSuggestion && combined.some(isTransientActionResult)) {
+            return [instantSuggestion, ...combined.filter(isTransientActionResult),
+                ...combined.slice(1).filter(result => !isTransientActionResult(result))];
+        }
+
+        // Commands are matched before reaching this renderer. Promote only these
+        // explicit action types, keeping web search and all navigation results.
+        // URL input and empty-query defaults retain their established ordering.
+        if (query.trim() && instantSuggestion?.type === ResultType.SEARCH_QUERY) {
+            const matchedActions = combined.filter(isActionResult)
+                .sort((a, b) => actionMatchScore(b) - actionMatchScore(a));
+            return [...matchedActions, ...combined.filter(result => !isActionResult(result))];
+        }
+        if (preferredAction && combined.includes(preferredAction) && isActionResult(preferredAction)) {
+            return [preferredAction, ...combined.filter(result => result !== preferredAction)];
+        }
         return combined;
     }
 
@@ -57,6 +91,11 @@ export class SharedSpotlightLogic {
             const formatted = SpotlightUtils.formatResult(result, mode, activeGroupName);
             const isSelected = index === 0; // First result is always selected by default
             const chipHtml = SpotlightUtils.generateSpaceChipHTML(result);
+            const favoriteIdentity = result.type === ResultType.SAVED_FAVORITE && result.metadata?.arcifyBridge?.kind === 'favorite'
+                ? ` data-favorite-id="${SpotlightUtils.escapeHtml(result.metadata.arcifyBridge.favoriteId)}"` : '';
+
+            const archiveIdentity = isArchiveResult(result)
+                ? ` data-archive-command="${SpotlightUtils.escapeHtml(result.metadata.archiveAction.command)}"${result.metadata.archiveAction.entryId === null ? '' : ` data-archive-entry-id="${SpotlightUtils.escapeHtml(result.metadata.archiveAction.entryId)}"`}` : '';
 
             // If chip exists, wrap URL text in span for flex layout; otherwise keep as text node
             const urlContent = formatted.subtitle
@@ -68,10 +107,11 @@ export class SharedSpotlightLogic {
             return `
                 <button class="arcify-spotlight-result-item ${isSelected ? 'selected' : ''}"
                         data-index="${index}"
+                        data-result-type="${SpotlightUtils.escapeHtml(result.type)}"${favoriteIdentity}${archiveIdentity}
                         data-testid="spotlight-result">
                     <img class="arcify-spotlight-result-favicon"
                          src="${SpotlightUtils.getFaviconUrl(result)}"
-                         alt="favicon"
+                         alt="${isActionResult(result) ? '' : 'favicon'}"
                          data-fallback-icon="true">
                     <div class="arcify-spotlight-result-content">
                         <div class="arcify-spotlight-result-title">${SpotlightUtils.escapeHtml(formatted.title)}</div>
@@ -84,20 +124,36 @@ export class SharedSpotlightLogic {
     }
 
     /**
-     * Update results display with incremental DOM updates
+     * Replace results without losing keyboard focus to a removed button.
      * @param {HTMLElement} resultsContainer - The results container element
      * @param {Array} currentResults - Current results array
      * @param {Array} newResults - New results to display
      * @param {string} mode - Spotlight mode
      * @param {string|null} activeGroupName - Active tab group name for Arcify context
+     * @param {HTMLElement|null} focusFallback - Safe input when the focused choice disappears
+     * @returns {boolean} Whether an owned, focused result disappeared or became ambiguous
      */
-    static updateResultsDisplay(resultsContainer, currentResults, newResults, mode, activeGroupName = null) {
-        // For now, we'll do a simple full update, but this can be optimized later for incremental updates
+    static updateResultsDisplay(resultsContainer, currentResults, newResults, mode, activeGroupName = null, focusFallback = null) {
+        const document = resultsContainer.ownerDocument;
+        const focused = document.activeElement;
+        // activeElement can retain a result after focus leaves an iframe/browser.
+        // Only restore focus that this live document and result list actually own.
+        const ownsFocus = document.hasFocus() && resultsContainer.contains(focused) &&
+            focused.matches('.arcify-spotlight-result-item');
+        const identity = ownsFocus ? resultIdentity(currentResults[Number(focused.dataset.index)]) : null;
+        const matches = identity === null ? [] : newResults.flatMap((result, index) => resultIdentity(result) === identity ? [index] : []);
+        const replacementIndex = matches.length === 1 ? matches[0] : -1;
         const html = SharedSpotlightLogic.generateResultsHTML(newResults, mode, activeGroupName);
         resultsContainer.innerHTML = html;
 
         // Setup favicon error handling for new images
         SpotlightUtils.setupFaviconErrorHandling(resultsContainer);
+        if (!ownsFocus) return false;
+        const target = replacementIndex < 0 ? focusFallback : resultsContainer.querySelector(`[data-index="${replacementIndex}"]`);
+        if (target?.isConnected && target.ownerDocument === document && !target.disabled && !target.closest('[inert], [hidden]')) {
+            target.focus({ preventScroll: true });
+        }
+        return replacementIndex < 0;
     }
 
     /**
@@ -110,6 +166,7 @@ export class SharedSpotlightLogic {
      */
     static createKeyDownHandler(selectionManager, onEnter, onEscape, skipContainerCheck = true) {
         return (e) => {
+            if (e.isComposing || e.keyCode === 229) return;
             // Let SelectionManager handle navigation keys first
             if (selectionManager.handleKeyDown(e, skipContainerCheck)) {
                 return; // Event was handled by selection manager
@@ -155,7 +212,7 @@ export class SharedSpotlightLogic {
                     const index = parseInt(item.dataset.index);
                     const result = currentResults[index];
                     if (result && onResultClick) {
-                        onResultClick(result, index);
+                        onResultClick(result, index, e);
                     }
                 }
             }
@@ -173,7 +230,7 @@ export class SharedSpotlightLogic {
     static createInputHandler(onInstantUpdate, onAsyncUpdate, debounceDelay = 150) {
         let debounceTimeout = null;
 
-        return (e) => {
+        const handler = (e) => {
             // Clear previous debounced call
             if (debounceTimeout) {
                 clearTimeout(debounceTimeout);
@@ -187,9 +244,15 @@ export class SharedSpotlightLogic {
             // Debounce async update
             if (onAsyncUpdate) {
                 debounceTimeout = setTimeout(() => {
+                    debounceTimeout = null;
                     onAsyncUpdate(e);
                 }, debounceDelay);
             }
         };
+        handler.cancel = () => {
+            clearTimeout(debounceTimeout);
+            debounceTimeout = null;
+        };
+        return handler;
     }
 }

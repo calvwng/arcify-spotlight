@@ -1,0 +1,9 @@
+# Little Arc caret and Spotlight settings
+
+Opening the Little Arc Space chooser focuses search with `preventScroll`. Previously the browser could scroll its still-short iframe to reveal the newly shown field, briefly moving the header above the viewport before the authenticated height update arrived. The change preserves focus, real short-viewport scrolling, measured sizing, destination identity and placement guards; it does not add a delay or relax presentation checks.
+
+The shared status button is named **Spotlight settings** because its existing options page covers Appearance, Shift-click/Peek, pairing and Connection. A local action in both overlay and New Tab matches Spotlight settings/options/preferences and connection settings/pairing aliases, even without Arcify pairing. It opens the existing options page; it neither changes pairing nor navigates the source tab. Empty queries do not add a new default action. Existing Arcify settings remains separate and keeps its prior priority for unqualified equal-score queries.
+
+Button and search share a pending guard. Only an explicit click or Enter dispatches the internal options action; repeated/pending gestures are suppressed, failures remain visible, timeouts do not automatically retry, and disposed surfaces ignore late replies. API errors offer the extension-details fallback.
+
+Manual check after updating: reload Spotlight, refresh the source webpage if its content script was invalidated, then open a fresh Little Arc page. Repeatedly open the Space chooser at wide and narrow sizes and type/search with the keyboard. Search for **Spotlight settings** or **pairing** in either Spotlight surface and verify that the existing options page opens. Connection and Arcify's distinct settings entry remain available. No new permissions are required.
