@@ -20,16 +20,40 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
         return { enabled: v[PEEK_ENABLED_KEY] === true, iframe: v[PEEK_IFRAME_KEY] === true, peerId: v[PEER_KEY], generation: v[PAIRING_GENERATION_KEY] ?? null };
     };
     const close = s => { if (!s.alive) return; s.alive = false; previews.close(s); if (sessions.get(s.source.tabId) === s) sessions.delete(s.source.tabId); try { s.port.disconnect(); } catch {} };
-    async function live(s, active = false) {
+    async function live(s, active = false, source = s.source) {
         if (!s.alive) throw unavailable();
-        const [pair, tab, window] = await Promise.all([settings(), api.tabs.get(s.source.tabId), api.windows.get(s.source.windowId)]);
+        const [pair, tab, window] = await Promise.all([settings(), api.tabs.get(source.tabId), api.windows.get(source.windowId)]);
         if (!s.alive || !pair.enabled || !isExtensionId(pair.peerId) || pair.peerId !== s.pair.peerId || pair.generation !== s.pair.generation || pair.iframe !== s.pair.iframe
-            || tab.windowId !== s.source.windowId || tab.incognito || window.type !== 'normal' || window.incognito || tab.url !== s.source.url
-            || tab.pendingUrl && tab.pendingUrl !== s.source.url || active && (!tab.active || !window.focused)) throw unavailable();
+            || tab.id !== source.tabId || window.id !== source.windowId || tab.windowId !== source.windowId || tab.incognito || window.type !== 'normal' || window.incognito || tab.url !== source.url
+            || tab.pendingUrl && tab.pendingUrl !== source.url || active && (!tab.active || !window.focused)) throw unavailable();
+    }
+    async function sourceDocument(s, source) {
+        await live(s, false, source);
+        // Browser routing must resolve BOTH the original document and the top
+        // frame. Only our isolated content script receives this read-only probe.
+        // Its URL corroborates tabs.get; it never supplies the session URL.
+        let timer, value;
+        try {
+            value = await Promise.race([
+                api.tabs.sendMessage(source.tabId, { type: 'arcifyPeekLiveProbe' }, { documentId: s.documentId, frameId: 0 }),
+                new Promise((_, reject) => { timer = setTimeout(() => reject(unavailable()), timeoutMs); })
+            ]);
+        } finally { clearTimeout(timer); }
+        if (!s.alive || value?.url !== source.url) throw unavailable();
+        await live(s, false, source);
+    }
+    async function handshakeSource(s) {
+        const tab = await api.tabs.get(s.source.tabId);
+        if (!isTransientUrl(tab.url) || new URL(tab.url).origin !== s.origin) throw unavailable();
+        const source = { ...s.source, url: tab.url };
+        await sourceDocument(s, source);
+        // Establish once during hello. Later navigation retires the session;
+        // never rebase an admitted operation or replay a link-opening request.
+        s.source = source;
     }
     async function proof(s, active = false) {
         await live(s, active);
-        const value = await api.tabs.sendMessage(s.source.tabId, { type: 'arcifyPeekLiveProbe' }, s.documentId ? { documentId: s.documentId } : { frameId: 0 });
+        const value = await api.tabs.sendMessage(s.source.tabId, { type: 'arcifyPeekLiveProbe' }, { documentId: s.documentId, frameId: 0 });
         if (!s.alive || !value || value.url !== s.source.url || value.live !== true || value.action !== s.executing || active && value.safe !== true) throw unavailable();
         if (s.selection) {
             if (value.selected?.url !== s.selection.url || value.selected?.mode !== s.selection.mode) throw unavailable();
@@ -54,9 +78,10 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
         const sender = port.sender;
         let origin; try { origin = new URL(sender?.url).origin; } catch {}
         if (sender?.id !== api.runtime.id || sender.frameId !== 0 || !positive(sender.tab?.id) || !positive(sender.tab?.windowId) || sender.tab.incognito
+            || typeof sender.documentId !== 'string' || !sender.documentId
             || !isTransientUrl(sender.url) || sender.origin && sender.origin !== origin || sender.documentLifecycle && sender.documentLifecycle !== 'active') { port.disconnect(); return; }
         const prior = sessions.get(sender.tab.id); if (prior) close(prior);
-        const s = { alive: true, port, source: { tabId: sender.tab.id, windowId: sender.tab.windowId, url: sender.url }, documentId: sender.documentId, connection: crypto.randomUUID(), begun: false, prepared: false, consumed: false, executing: null };
+        const s = { alive: true, port, source: { tabId: sender.tab.id, windowId: sender.tab.windowId, url: sender.url }, origin, documentId: sender.documentId, connection: crypto.randomUUID(), begun: false, prepared: false, consumed: false, executing: null };
         sessions.set(s.source.tabId, s);
         port.onDisconnect.addListener(() => close(s));
         let queue = Promise.resolve();
@@ -64,8 +89,9 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
             if (!s.alive) return;
             try {
                 if (!s.begun && exact(message, ['kind']) && message.kind === 'hello') {
-                    s.begun = true; s.pair = await settings(); await live(s);
+                    s.begun = true; s.pair = await settings(); await handshakeSource(s);
                     const result = await call(s, 'capability'); if (result.version !== 3) throw unavailable();
+                    await sourceDocument(s, s.source);
                     s.ready = true; post(s, { kind: 'ready' }); return;
                 }
                 if (s.ready && !s.prepared && s.pair.iframe && exact(message, ['kind', 'url']) && message.kind === 'open' && isTransientUrl(message.url)) {
