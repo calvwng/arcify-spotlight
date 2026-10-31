@@ -1,4 +1,5 @@
 import { isTransientUrl, PEER_KEY, PAIRING_GENERATION_KEY } from './arcify-bridge-protocol.js';
+import { installSourceDimming } from './little-arc-dimming-content.js';
 // Keep protocol constants here: the content bundle must not install the worker broker.
 const ENABLED = 'peekEnabled', IFRAME = 'peekIframeEnabled', PORT = 'arcify-peek-top-v1';
 
@@ -17,6 +18,7 @@ export function eligiblePeekLink(event, document, window) {
 export function installPeekContent({ api = chrome, document = globalThis.document, window = globalThis.window } = {}) {
     if (window.top !== window || !isTransientUrl(window.location.href)) return { dispose() {} };
     if (window.__arcifyPeek) return window.__arcifyPeek;
+    const dimming = installSourceDimming({ api, document, window });
     let disposed = false, enabled = false, ready = false, port = null, host = null, dialog = null, shadow = null, preview = null;
     let expand = null, fallback = null, closeButton = null, status = null, address = null, observer = null, previousFocus = null, previewNonce = null, selected = null;
     let action = null, opening = false, failed = false, sourceUrl = window.location.href, revision = 0;
@@ -179,6 +181,7 @@ export function installPeekContent({ api = chrome, document = globalThis.documen
         warmups = 0; void connect();
     };
     const probe = (message, sender, respond) => {
+        if (dimming.receive(message, sender) === true) { respond({ accepted: true }); return; }
         if (message?.type === 'arcifyPeekLiveProbe' && sender.id === api.runtime.id && !sender.tab) respond({ url: window.location.href, live: operationLive(), safe: presentation(true), action, selected });
     };
     const requestConnect = () => { if (connecting) reconnectRequested = true; else void connect(); };
@@ -198,7 +201,7 @@ export function installPeekContent({ api = chrome, document = globalThis.documen
     const visibility = () => { if (document.visibilityState !== 'visible') lostFocus(); };
     const readyDocument = () => { void connect(); };
     const dispose = () => {
-        disposed = true; revision++; clearPending(); clearNotice(); disconnect(); detach(); document.removeEventListener('click', click, true); document.removeEventListener('DOMContentLoaded', readyDocument); document.removeEventListener('fullscreenchange', fullscreen);
+        disposed = true; revision++; dimming.dispose(); clearPending(); clearNotice(); disconnect(); detach(); document.removeEventListener('click', click, true); document.removeEventListener('DOMContentLoaded', readyDocument); document.removeEventListener('fullscreenchange', fullscreen);
         window.removeEventListener('pagehide', pagehide); window.removeEventListener('pageshow', pageshow); window.removeEventListener('popstate', navigated); window.removeEventListener('hashchange', navigated);
         window.removeEventListener('beforeunload', beforeunload); window.removeEventListener('blur', lostFocus); document.removeEventListener('visibilitychange', visibility);
         document.removeEventListener('pointerover', warmup, true); window.removeEventListener('focus', warmup);
