@@ -61,7 +61,7 @@ it('ready is read-only, original URL held by backend, authority never sent to co
     const f = fixture(), p = await f.open(); expect(p.postMessage).toHaveBeenCalledWith({ kind: 'ready' }); expect(p.postMessage).toHaveBeenCalledWith({ kind: 'show', url: 'https://target.test/original', nonce: expect.any(String) });
     expect(JSON.stringify(p.postMessage.mock.calls)).not.toContain(OP); expect(f.api.runtime.sendMessage.mock.calls.map(([, r]) => r.action)).toEqual(['capability', 'prepare']);
     await p.onMessage.emit({ kind: 'expand' }); expect(p.postMessage).toHaveBeenCalledWith({ kind: 'completed', action: 'expand' });
-    expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(1, { type: 'arcifyPeekLiveProbe' }, { documentId: 'document-one' });
+    expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(1, { type: 'arcifyPeekLiveProbe' }, { documentId: 'document-one', frameId: 0 });
 });
 for (const cause of ['page', 'otherExtension', 'child', 'extensionFrame', 'inactiveDocument', 'wrongOrigin', 'private']) it(`rejects ${cause} runtime connection`, async () => {
     const f = fixture(), p = f.port();
@@ -96,10 +96,10 @@ it('status-only subframe loading preserves top-document operation and explicit e
     const f=fixture(),p=await f.open();await f.api.tabs.onUpdated.emit(1,{status:'loading'});await f.api.tabs.onUpdated.emit(1,{status:'complete'});
     expect(p.disconnect).not.toHaveBeenCalled();await p.onMessage.emit({kind:'expand'});expect(p.postMessage).toHaveBeenCalledWith({kind:'completed',action:'expand'});
 });
-it('without optional documentId, live source Port and fresh top-frame action proof remain mandatory',async()=>{
+it('missing browser document identity refuses the handshake without a frame-only fallback',async()=>{
     const f=fixture(),p=f.port();delete p.sender.documentId;await f.api.runtime.onConnect.emit(p);await p.onMessage.emit({kind:'hello'});await p.onMessage.emit({kind:'open',url:'https://target.test/original'});
     f.api.tabs.sendMessage.mockResolvedValue({url:f.source.url,live:false,safe:false,action:null});await p.onMessage.emit({kind:'expand'});
-    expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(1,{type:'arcifyPeekLiveProbe'},{frameId:0});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='expand')).toBe(false);
+    expect(p.disconnect).toHaveBeenCalled();expect(f.api.tabs.sendMessage).not.toHaveBeenCalled();expect(f.api.runtime.sendMessage).not.toHaveBeenCalled();
 });
 it('failed presentation or wrong live document cannot expand', async () => {
     const f = fixture(), p = await f.open(); f.api.tabs.sendMessage.mockResolvedValue({ url: f.source.url, live: true, safe: false, action: 'expand' });
@@ -315,4 +315,98 @@ it('direct native result uncertainty never retries or downgrades to another open
 it('v2 capability cannot arm the direct Shift-click protocol',async()=>{
  const f=fixture({peekIframeEnabled:false});f.api.runtime.sendMessage.mockResolvedValue({success:true,version:2});const p=await f.mount();await p.onMessage.emit({kind:'launch',url:'https://target.test/original'});
  expect(p.disconnect).toHaveBeenCalled();expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='prepare')).toBe(false);
+});
+
+for (const navigation of ['pushState', 'replaceState', 'reconnect']) it(`new ${navigation} handshake binds the browser URL to the original top document`, async () => {
+    const f = fixture(), p = f.port(), oldUrl = p.sender.url;
+    f.source.url = `https://source.test/${navigation}`;
+    await f.api.runtime.onConnect.emit(p); await p.onMessage.emit({ kind: 'hello' });
+    expect(p.sender.url).toBe(oldUrl);
+    expect(p.postMessage).toHaveBeenCalledWith({ kind: 'ready' });
+    expect(f.broker.sessions.get(1).source.url).toBe(f.source.url);
+    expect(f.api.tabs.sendMessage).toHaveBeenCalledTimes(2);
+    for (const call of f.api.tabs.sendMessage.mock.calls) expect(call).toEqual([1, { type: 'arcifyPeekLiveProbe' }, { documentId: 'document-one', frameId: 0 }]);
+    expect(f.api.runtime.sendMessage.mock.calls.map(([, r]) => r.action)).toEqual(['capability']);
+    expect(f.api.runtime.sendMessage.mock.calls[0][1].source.url).toBe(f.source.url);
+});
+it('refresh uses the new browser document while old-document messages cannot rearm', async () => {
+    const f = fixture(), old = await f.mount(); old.disconnect();
+    const fresh = f.port(); fresh.sender.documentId = 'document-two';
+    f.api.tabs.sendMessage.mockImplementation(async (_id, _request, target) => {
+        if (target.documentId !== 'document-two' || target.frameId !== 0) throw Error('No matching document');
+        return { url: f.source.url };
+    });
+    await f.api.runtime.onConnect.emit(fresh); await fresh.onMessage.emit({ kind: 'hello' });
+    await old.onMessage.emit({ kind: 'open', url: 'https://target.test/stale' });
+    expect(fresh.postMessage).toHaveBeenCalledWith({ kind: 'ready' });
+    expect(f.api.runtime.sendMessage.mock.calls.every(([, r]) => r.action === 'capability')).toBe(true);
+});
+for (const invalid of ['differentOrigin', 'wrongTab', 'wrongWindow', 'privateTab', 'privateWindow', 'popupWindow', 'pendingNavigation', 'wrongProbeUrl', 'missingReceiver']) it(`new handshake refuses ${invalid} before capability`, async () => {
+    const f = fixture(), p = f.port();
+    if (invalid === 'differentOrigin') f.source.url = 'https://other.test/new';
+    if (invalid === 'wrongTab') f.source.id = 2;
+    if (invalid === 'wrongWindow') f.api.windows.get = async () => ({ id: 99, type: 'normal', incognito: false });
+    if (invalid === 'privateTab') f.source.incognito = true;
+    if (invalid === 'privateWindow') f.api.windows.get = async () => ({ id: 10, type: 'normal', incognito: true });
+    if (invalid === 'popupWindow') f.api.windows.get = async () => ({ id: 10, type: 'popup', incognito: false });
+    if (invalid === 'pendingNavigation') f.source.pendingUrl = 'https://source.test/next';
+    if (invalid === 'wrongProbeUrl') f.api.tabs.sendMessage.mockResolvedValue({ url: 'https://source.test/page-supplied' });
+    if (invalid === 'missingReceiver') f.api.tabs.sendMessage.mockRejectedValue(Error('No receiving document'));
+    await f.api.runtime.onConnect.emit(p); await p.onMessage.emit({ kind: 'hello' });
+    expect(p.disconnect).toHaveBeenCalled(); expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'ready')).toBe(false);
+    expect(f.api.runtime.sendMessage).not.toHaveBeenCalled();
+});
+for (const phase of ['firstProbe', 'capability', 'lastProbe']) for (const change of ['navigation', 'windowTransfer', 'pairing', 'disable', 'disconnect']) it(`${change} during ${phase} cannot publish ready or replay intent`, async () => {
+    const f = fixture(), p = f.port(); let probes = 0;
+    const changeState = () => {
+        if (change === 'navigation') f.source.url = 'https://source.test/new';
+        if (change === 'windowTransfer') f.source.windowId = 22;
+        if (change === 'pairing') f.settings.arcifyBridgePairingGeneration = 'changed';
+        if (change === 'disable') f.settings.peekEnabled = false;
+        if (change === 'disconnect') p.disconnect();
+    };
+    f.api.tabs.sendMessage.mockImplementation(async () => {
+        const response = { url: f.source.url }; probes++;
+        if (phase === 'firstProbe' && probes === 1 || phase === 'lastProbe' && probes === 2) changeState();
+        return response;
+    });
+    f.api.runtime.sendMessage.mockImplementation(async () => { if (phase === 'capability') changeState(); return { success: true, version: 3 }; });
+    await f.api.runtime.onConnect.emit(p); await p.onMessage.emit({ kind: 'hello' });
+    await p.onMessage.emit({ kind: 'open', url: 'https://target.test/stale' });
+    expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'ready')).toBe(false);
+    expect(f.api.runtime.sendMessage.mock.calls.every(([, r]) => r.action === 'capability')).toBe(true);
+});
+it('same-URL replacement during capability fails the final exact-document route', async () => {
+    const f = fixture(), p = f.port(); let currentDocument = 'document-one';
+    f.api.tabs.sendMessage.mockImplementation(async (_id, _request, target) => {
+        if (target.documentId !== currentDocument || target.frameId !== 0) throw Error('Document no longer exists');
+        return { url: f.source.url };
+    });
+    f.api.runtime.sendMessage.mockImplementation(async () => { currentDocument = 'replacement-document'; return { success: true, version: 3 }; });
+    await f.api.runtime.onConnect.emit(p); await p.onMessage.emit({ kind: 'hello' });
+    expect(p.disconnect).toHaveBeenCalled(); expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'ready')).toBe(false);
+});
+it('admitted source remains immutable after same-document URL change', async () => {
+    const f = fixture(), p = await f.mount(), session = f.broker.sessions.get(1), original = { ...session.source };
+    f.source.url = 'https://source.test/changed-after-ready';
+    await p.onMessage.emit({ kind: 'open', url: 'https://target.test/' });
+    expect(session.source).toEqual(original);
+    expect(f.api.runtime.sendMessage.mock.calls.map(([, r]) => r.action)).toEqual(['capability']);
+});
+for (const response of [{ success: false }, { success: true, version: 2 }, null]) it(`capability failure ${JSON.stringify(response)} fails closed`, async () => {
+    const f = fixture(); f.api.runtime.sendMessage.mockResolvedValue(response); const p = await f.mount();
+    expect(p.disconnect).toHaveBeenCalled(); expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'ready')).toBe(false);
+});
+it('unresponsive document probe has a bounded failure and no capability call', async () => {
+    vi.useFakeTimers(); const f = fixture(), p = f.port(); f.api.tabs.sendMessage.mockImplementation(() => new Promise(() => {}));
+    await f.api.runtime.onConnect.emit(p); const work = p.onMessage.emit({ kind: 'hello' });
+    await vi.advanceTimersByTimeAsync(30001); await work;
+    expect(p.disconnect).toHaveBeenCalled(); expect(f.api.runtime.sendMessage).not.toHaveBeenCalled();
+});
+it('same-URL replacement after readiness cannot prepare or open through a retired document', async () => {
+    const f = fixture({ peekIframeEnabled: false }), p = await f.mount();
+    f.api.tabs.sendMessage.mockRejectedValue(Error('Original document no longer exists'));
+    await p.onMessage.emit({ kind: 'launch', url: 'https://target.test/' });
+    expect(f.api.runtime.sendMessage.mock.calls.map(([, r]) => r.action)).toEqual(['capability']);
+    expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'completed')).toBe(false);
 });
