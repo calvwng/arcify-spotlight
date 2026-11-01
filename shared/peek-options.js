@@ -1,9 +1,11 @@
 export function installPeekOptions({ api = chrome, document = globalThis.document } = {}) {
     const checkbox = document.getElementById('peek-enabled'), iframe = document.getElementById('peek-iframe-enabled'), status = document.getElementById('peek-options-status');
     if (!checkbox) return;
-    const controls = disabled => { checkbox.disabled = disabled; if (iframe) iframe.disabled = disabled || !checkbox.checked; };
+    const dim = document.getElementById('peek-dim-source');
+    const controls = disabled => { checkbox.disabled = disabled; if (iframe) iframe.disabled = disabled || !checkbox.checked; if (dim) dim.disabled = disabled || !checkbox.checked; };
     controls(true);
-    const ready = api.storage.local.get(['peekEnabled', 'peekIframeEnabled']).then(value => {
+    const ready = api.storage.local.get(['peekEnabled', 'peekIframeEnabled', 'littleArcDimSource']).then(value => {
+        if (dim) dim.checked = value.littleArcDimSource === true;
         checkbox.checked = value.peekEnabled === true; if (iframe) iframe.checked = value.peekIframeEnabled === true; controls(false);
     }, () => { status.textContent = 'Could not read Shift-click settings.'; });
     const change = (control, key) => async event => {
@@ -19,5 +21,6 @@ export function installPeekOptions({ api = chrome, document = globalThis.documen
     };
     checkbox.addEventListener('change', change(checkbox, 'peekEnabled'));
     iframe?.addEventListener('change', change(iframe, 'peekIframeEnabled'));
+    dim?.addEventListener('change', change(dim, 'littleArcDimSource'));
     return { ready };
 }

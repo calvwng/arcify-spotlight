@@ -1,5 +1,6 @@
 import { PEER_KEY, PAIRING_GENERATION_KEY, isExtensionId, isTransientUrl } from './arcify-bridge-protocol.js';
 import { createPeekPreviewRegistry } from './peek-preview-broker.js';
+import { createSourceDimming } from './little-arc-dimming-broker.js';
 export const PEEK_ENABLED_KEY = 'peekEnabled';
 export const PEEK_IFRAME_KEY = 'peekIframeEnabled';
 export const PEEK_PORT = 'arcify-peek-top-v1';
@@ -15,6 +16,7 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
     const listen = (event, fn) => { event?.addListener(fn); removers.push(() => event?.removeListener(fn)); };
     const post = (s, message) => { try { s.port.postMessage(message); } catch {} };
     const previews = createPeekPreviewRegistry(api, { sessions, notify: post });
+    const dimming = createSourceDimming(api);
     const settings = async () => {
         const v = await api.storage.local.get([PEEK_ENABLED_KEY, PEEK_IFRAME_KEY, PEER_KEY, PAIRING_GENERATION_KEY]);
         return { enabled: v[PEEK_ENABLED_KEY] === true, iframe: v[PEEK_IFRAME_KEY] === true, peerId: v[PEER_KEY], generation: v[PAIRING_GENERATION_KEY] ?? null };
@@ -111,6 +113,7 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
                     s.operation = prepared.operation; await proof(s, true);
                     const result = await call(s, 'fallback', { connection: s.connection, operation: s.operation });
                     if (result.completed !== true || result.action !== 'fallback' || !positive(result.tabId) || !positive(result.windowId)) throw unavailable();
+                    s.dimTarget = { tabId: result.tabId, windowId: result.windowId };
                     s.completed = true; post(s, { kind: 'completed', action: 'fallback' }); s.executing = null; return;
                 }
                 if (s.operation && !s.consumed && exact(message, ['kind']) && ['expand', 'fallback'].includes(message.kind)) {
@@ -119,6 +122,7 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
                     await proof(s, true);
                     const result = await call(s, message.kind, { connection: s.connection, operation: s.operation });
                     if (result.completed !== true || result.action !== message.kind || !positive(result.tabId) || !positive(result.windowId)) throw unavailable();
+                    if (message.kind === 'fallback') s.dimTarget = { tabId: result.tabId, windowId: result.windowId };
                     s.completed = true; post(s, { kind: 'completed', action: message.kind }); s.executing = null; return;
                 }
                 if (s.operation && !s.consumed && exact(message, ['kind']) && message.kind === 'pulse') {
@@ -130,6 +134,7 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
                     s.acknowledged = true;
                     const result = await call(s, 'acknowledge', { connection: s.connection, operation: s.operation });
                     if (result.acknowledged !== true) throw unavailable();
+                    if (s.alive && sessions.get(s.source.tabId) === s && s.dimTarget) void dimming.start(s.source, s.documentId, s.dimTarget, s.pair).catch(() => {});
                     post(s, { kind: 'acknowledged' }); return;
                 }
                 throw unavailable();
@@ -162,5 +167,5 @@ export function installPeekBroker(api = chrome, { timeoutMs = 30000 } = {}) {
     listen(api.tabs.onReplaced, (added, removed) => { invalidate(added); invalidate(removed); });
     listen(api.windows.onRemoved, id => { for (const s of [...sessions.values()]) if (s.source.windowId === id) close(s); });
     listen(api.storage.onChanged, (changes, area) => { if (area === 'local' && [PEEK_ENABLED_KEY, PEEK_IFRAME_KEY, PEER_KEY, PAIRING_GENERATION_KEY].some(k => Object.hasOwn(changes, k))) for (const s of [...sessions.values()]) close(s); });
-    return { sessions, dispose() { for (const s of [...sessions.values()]) close(s); previews.dispose(); removers.forEach(fn => fn()); } };
+    return { sessions, dispose() { for (const s of [...sessions.values()]) close(s); previews.dispose(); dimming.dispose(); removers.forEach(fn => fn()); } };
 }

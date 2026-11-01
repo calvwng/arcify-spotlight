@@ -410,3 +410,25 @@ it('same-URL replacement after readiness cannot prepare or open through a retire
     expect(f.api.runtime.sendMessage.mock.calls.map(([, r]) => r.action)).toEqual(['capability']);
     expect(p.postMessage.mock.calls.some(([r]) => r.kind === 'completed')).toBe(false);
 });
+for (const acknowledged of [true, false, 'closed']) it(`cosmetic dim offer requires successful launch acknowledgement (${acknowledged})`, async () => {
+    const f = fixture({ peekIframeEnabled: false, littleArcDimSource: true });
+    let opened = false, reply;
+    const originalGet = f.api.tabs.get, originalSend = f.api.tabs.sendMessage.getMockImplementation();
+    f.api.tabs.get = async id => id === 3 ? { id: 3, windowId: 20, active: true } : originalGet(id);
+    f.api.windows.get = async id => ({ id, type: 'normal', focused: id === 20 ? opened : !opened });
+    f.api.tabs.sendMessage.mockImplementation(async (id, message, route) => message.type === 'littleArcDimOffer' ? { accepted: true } : originalSend(id, message, route));
+    f.api.runtime.sendMessage.mockImplementation(async (_peer, request) => {
+        if (request.action === 'capability') return { success: true, version: 3 };
+        if (request.action === 'prepare') return { success: true, operation: OP };
+        if (request.action === 'acknowledge') return acknowledged === 'closed' ? new Promise(resolve => { reply = resolve; }) : { success: true, acknowledged };
+        opened = true; return { success: true, completed: true, action: 'fallback', tabId: 3, windowId: 20 };
+    });
+    const p = await f.mount(); await p.onMessage.emit({ kind: 'launch', url: 'https://target.test/' });
+    expect(f.api.tabs.sendMessage.mock.calls.some(([, m]) => m.type === 'littleArcDimOffer')).toBe(false);
+    const ack = p.onMessage.emit({ kind: 'acknowledge' });
+    if (acknowledged === 'closed') { while (!reply) await Promise.resolve(); await p.onMessage.emit({ kind: 'close' }); reply({ success: true, acknowledged: true }); }
+    await ack;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.api.tabs.sendMessage.mock.calls.filter(([, m]) => m.type === 'littleArcDimOffer')).toHaveLength(acknowledged === true ? 1 : 0);
+    if (acknowledged === true) { await p.onMessage.emit({ kind: 'close' }); expect(f.broker.sessions.size).toBe(0); }
+});

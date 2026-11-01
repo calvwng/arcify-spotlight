@@ -28,6 +28,22 @@ jobs:
       - name: Build extension
         run: npm run build
 
+      - name: Package and verify exact build contents
+        run: |
+          npm run zip
+          python3 scripts/test-verify-package.py
+          python3 scripts/verify-package.py arcify-spotlight.zip dist manifest.json > package-receipt.json
+
+      - name: Upload verified extension package
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotlight-${{ github.sha }}
+          path: |
+            arcify-spotlight.zip
+            package-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
       # # E2E tests disabled — Puppeteer Chrome launch fails in GH Actions
       # - name: Run E2E tests
       #   run: xvfb-run --auto-servernum npm run test:e2e

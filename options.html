@@ -34,6 +34,8 @@
             <label><input type="checkbox" id="peek-enabled"> Open Shift-clicked web links in Little Arc</label>
             <p class="hint">Off by default. Pair both extensions, then Shift-click an ordinary link in the main webpage. Little Arc opens one real browser page; its header can move that same page into a Space. Sidebar selection keeps its existing behavior.</p>
             <label><input type="checkbox" id="peek-iframe-enabled"> Use iframe Peek instead (experimental)</label>
+            <label><input type="checkbox" id="peek-dim-source"> Dim the source page while its Little Arc window is focused</label>
+            <p class="hint">For Shift-click and Peek openings. Returning to the source, changing tabs (including Little Arc settings), or leaving Little Arc clears dimming until a new opening. It also expires after ten minutes. Other opening routes are unchanged.</p>
             <p class="hint">Optional Peek previews can be blocked by websites or sign-in requirements. Its explicit Little Arc fallback remains available. Opening actions use the verified current preview URL, or the original link when unavailable; form entries, JavaScript state and history are not transferred.</p>
             <p class="hint">Subframe links, named targets and pages that intercept clicks may need the Little Arc context menu. A webpage can cover or interfere with embedded controls. No security headers are bypassed.</p>
             <p id="peek-options-status" class="hint" role="status" aria-live="polite"></p>
