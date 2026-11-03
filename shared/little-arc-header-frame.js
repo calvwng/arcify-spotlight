@@ -60,6 +60,7 @@ export function installLittleArcHeaderFrame({api=chrome,document=globalThis.docu
   port.onMessage.addListener(message=>{
    try{
     if(message?.kind==='context')render(message.context);
+    else if(message?.kind==='settingsContext'){render(message.context);pending=true;status.hidden=false;status.textContent='Opening trusted Little Arc settings. Nothing has moved.';controls();presentation();}
     else if(message?.kind==='systemScheme'&&Object.keys(message).length===2&&['light','dark'].includes(message.mode)){systemMode=message.mode;paintTheme();}
     else if(message?.kind==='dismissPicker'&&Object.keys(message).length===1)dismissFromPage();
     else if(message?.kind==='placementLocked'){locked=true;pending=false;showError('A placement was dispatched or its outcome is uncertain. Check trusted controls; do not repeat the transfer.');controls();}

@@ -2,7 +2,7 @@
 
 Open **More → Little Arc settings → Source page dimming** in Little Arc. Enable dimming and choose a darkness percentage, then Save. The controller's sample preview is illustrative; editing it does not revive a real source-page lease. Cancel discards the draft. Dimming remains off by default, and an existing enabled setting is preserved. It applies only to successfully acknowledged Shift-click/Peek → Little Arc launches. Context-menu, Spotlight search, and other opening routes are unchanged.
 
-Darkness is an integer percentage from 15 to 75. If no strength has been saved, the darker default is 55% (previously the fixed shade was 28%). The rendered black overlay uses that percentage as its alpha; 70% is darker than 55%. Existing explicit strength values are preserved. Malformed saved data fails closed and is reported without silently replacing it.
+Darkness is an integer percentage from 15 to 90. If no strength has been saved, the darker default is 55% (previously the fixed shade was 28%). The rendered black overlay uses that percentage as its alpha; 70% is darker than 55%. Existing explicit strength values are preserved. Malformed saved data fails closed and is reported without silently replacing it.
 
 Spotlight remains the single storage authority: `littleArcDimSource` is the existing enabled boolean and `littleArcDimStrength` is the new integer percentage. Reading missing preferences does not write storage. The trusted Arcify controller proxies paired background requests; Spotlight serializes compare-and-set with full expected enabled/strength values and verifies readback. Immediately before a changed write, Spotlight requires a bounded, one-use callback proving Arcify still owns the exact pending request and controller. Timeout, changed pairing, expired controller or stale settings fail closed without retry. Cross-extension/native operations cannot provide an atomic transaction across the final proof and storage dispatch; a write already sent is not rolled back on a lost reply.
 
@@ -19,3 +19,5 @@ The cosmetic state retains only source tab/window/URL/document identity, confirm
 Native multi-window focus behavior and source-page appearance require later manual browser acceptance. Unit tests do not prove operating-system focus delivery timing.
 
 Switching the active tab in Little Arc also ends dimming, including switching to its trusted window-size controls. The cosmetic association does not discover or grant authority to additional controller tabs.
+
+Little Arc settings reads a fresh controller view immediately before opening. This avoids using the header's cached two-minute view after it expires, without retrying a possibly dispatched settings action. Explicit Space and destination choices remain unchanged; placement uncertainty remains locked. A confirmed successful settings open permits another deliberate open after Refresh choices. An uncertain reply never automatically reopens settings.

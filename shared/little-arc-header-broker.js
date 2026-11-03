@@ -12,7 +12,7 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
  const pairing=async()=>{const data=await api.storage.local.get([PEER_KEY,PAIRING_GENERATION_KEY]);return {peerId:data[PEER_KEY],generation:data[PAIRING_GENERATION_KEY]??null};};
  async function sourceLive(s,active=false){
   if(!s.alive)throw error();const [tab,window]=await Promise.all([api.tabs.get(s.source.tabId),api.windows.get(s.source.windowId)]);
-  if(!s.alive||tab.windowId!==s.source.windowId||tab.incognito||tab.pinned||tab.splitViewId!==undefined&&tab.splitViewId!==-1||window.incognito||window.type!=='normal'||tab.url!==s.source.url||tab.pendingUrl&&tab.pendingUrl!==tab.url||!isTransientUrl(tab.url)||active&&(!tab.active||!window.focused))throw error();
+  if(!s.alive||tab.id!==s.source.tabId||window.id!==s.source.windowId||tab.windowId!==s.source.windowId||tab.incognito||tab.pinned||tab.splitViewId!==undefined&&tab.splitViewId!==-1||window.incognito||window.type!=='normal'||tab.url!==s.source.url||tab.pendingUrl&&tab.pendingUrl!==tab.url||!isTransientUrl(tab.url)||active&&(!tab.active||!window.focused))throw error();
  }
  async function directLive(s){
   await sourceLive(s,true);
@@ -72,7 +72,7 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
      bound=s;s.frame=port;if(s.systemMode)post(port,{kind:'systemScheme',mode:s.systemMode});post(s.top,{kind:'bound'});post(port,{kind:'context',context:s.context});if(s.locked)post(port,{kind:'placementLocked'});return;
     }
     const s=bound;await sourceLive(s);
-    if(exact(message,['kind'])&&message.kind==='refresh'){const context=await prepare(s);if(context){post(port,{kind:'context',context});if(s.locked)post(port,{kind:'placementLocked'});}return;}
+    if(exact(message,['kind'])&&message.kind==='refresh'){const context=await prepare(s);if(context){if(!s.settingsDispatched)s.settingsUsed=false;post(port,{kind:'context',context});if(s.locked)post(port,{kind:'placementLocked'});}return;}
     if(exact(message,['kind','mode'])&&message.kind==='colorScheme'&&['light','dark'].includes(message.mode)){post(s.top,{kind:'colorScheme',mode:message.mode});return;}
     if(exact(message,['kind','rects'])&&message.kind==='hitRegions'&&validHitRegions(message.rects)){post(s.top,{kind:'hitRegions',rects:message.rects});return;}
     if(exact(message,['kind','collapsed','advanced','height'])&&message.kind==='resize'&&typeof message.collapsed==='boolean'&&typeof message.advanced==='boolean'&&Number.isInteger(message.height)&&message.height>=28&&message.height<=480){post(s.top,{kind:'resize',collapsed:message.collapsed,advanced:message.advanced,height:message.height});return;}
@@ -106,7 +106,19 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
      return;
     }
     if(exact(message,['kind'])&&message.kind==='sizeSettings'){
-     if(s.consumed&&!s.locked)throw error();s.grant=null;s.consumed=true;await sourceLive(s,true);await call(s,'settings',{viewId:s.context.viewId});post(port,{kind:'reviewReady'});return;
+     if(s.settingsDispatched||s.settingsUsed||s.consumed&&!s.locked)throw error();
+     const source={...s.source};
+     const current=()=>{if(!s.alive||sessions.get(source.tabId)!==s||s.revision!==revision||!['tabId','windowId','url'].every(key=>s.source[key]===source[key]))throw error();};
+     s.grant=null;s.consumed=true;s.settingsUsed=true;current();await sourceLive(s,true);current();
+     // Views expire independently of the mounted header. Refresh this read-only
+     // context once before settings, without resetting placement/dispatch fences.
+     const fresh=await call(s,'inspect');current();if(!fresh)throw error();
+     await sourceLive(s,true);current();
+     s.context={...fresh,siteHostname:new URL(source.url).hostname};
+     post(port,{kind:'settingsContext',context:s.context});
+     await sourceLive(s,true);current();
+     await call(s,'settings',{viewId:s.context.viewId},()=>{current();if(s.settingsDispatched)throw error();s.settingsDispatched=true;});
+     current();s.settingsDispatched=false;post(port,{kind:'reviewReady'});return;
     }
     if(exact(message,['kind','target'])&&message.kind==='review'){
      const target=message.target;if(s.consumed&&(!s.locked||target!==null))throw error();
@@ -119,11 +131,11 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
   port.onMessage.addListener(message=>{
    // Claim synchronously, before queuing/awaiting; discard concurrent duplicates,
    // including when the first request later fails before dispatch.
-   const s=bound,isPlace=message?.kind==='placeDirect';
-   if(isPlace&&s){if(s.inFlight||s.locked)return Promise.resolve();s.inFlight=true;}
+   const s=bound,isPlace=message?.kind==='placeDirect',isSettings=message?.kind==='sizeSettings';
+   if((isPlace||isSettings)&&s){if(s.inFlight||isPlace&&s.locked||isSettings&&(s.settingsDispatched||s.settingsUsed))return Promise.resolve();s.inFlight=true;}
    let revision=s?.revision??0;
    if(s&&['placeDirect','cancelDirect','refresh','review','sizeSettings'].includes(message?.kind)){revision=s.revision=(s.revision??0)+1;s.grant=null;}
-   const work=()=>handle(message,revision).finally(()=>{if(isPlace&&s)s.inFlight=false;});
+   const work=()=>handle(message,revision).finally(()=>{if((isPlace||isSettings)&&s)s.inFlight=false;});
    queue=queue.then(work).catch(()=>post(port,{kind:'error',message:error().message}));return queue;
   });
 

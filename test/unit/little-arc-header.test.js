@@ -85,7 +85,7 @@ it('bound acknowledgement cancels fallback timeout and leaves controller overlay
 async function compactFixture(value=context()){
  const {readFileSync}=await import('node:fs');document.body.innerHTML=readFileSync('little-arc-header.html','utf8');
  const f=fixture();cleanups.push(f.dispose);const frame=f.port(HEADER_FRAME_PORT,{});f.api.runtime.connect=vi.fn(()=>frame);const handlers=new Map(),messages=new Map();
- for(const id of ['choices','space','window','controls','refresh','dismiss','reopen','more','space-menu-toggle','space-search']){const node=document.getElementById(id),original=node.addEventListener.bind(node);node.addEventListener=(type,handler)=>{handlers.set(`${id}:${type}`,handler);original(type,handler);};}
+ for(const id of ['choices','space','window','controls','refresh','dismiss','reopen','more','space-menu-toggle','space-search','size-settings']){const node=document.getElementById(id),original=node.addEventListener.bind(node);node.addEventListener=(type,handler)=>{handlers.set(`${id}:${type}`,handler);original(type,handler);};}
  const w={parent:{},addEventListener:(type,handler)=>messages.set(type,handler),removeEventListener:type=>messages.delete(type)};
  const ui=installLittleArcHeaderFrame({api:f.api,document,window:w});cleanups.push(()=>ui.dispose());messages.get('message')({source:w.parent,data:{kind:'littleArcHeaderBootstrap',challenge:NONCE}});await frame.onMessage.emit({kind:'context',context:value});
  return {...f,frame,handlers,click:id=>handlers.get(`${id}:click`)({isTrusted:true})};
@@ -372,4 +372,32 @@ it('caret focuses search without scrolling the still-short iframe or granting pl
  const f=await compactFixture(context()),search=document.getElementById('space-search'),focus=vi.spyOn(search,'focus');
  for(let i=0;i<3;i++){f.click('space-menu-toggle');expect(focus).toHaveBeenLastCalledWith({preventScroll:true});expect(document.activeElement).toBe(search);expect(document.getElementById('space-picker').hidden).toBe(false);f.click('space-menu-toggle');}
  expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
+});
+it('settings refreshes its expired view, and only explicit refresh permits a later successful open',async()=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());const fresh={...context(),viewId:'22222222-2222-4222-8222-222222222222'};
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:fresh}:{success:true,reviewReady:true});
+ await frame.onMessage.emit({kind:'sizeSettings'});await frame.onMessage.emit({kind:'sizeSettings'});
+ let settings=f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings');expect(settings).toHaveLength(1);expect(settings[0][1]).toMatchObject({viewId:fresh.viewId,source:{tabId:3,windowId:20,url:'https://page.test/'}});
+ await frame.onMessage.emit({kind:'refresh'});await frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
+});
+it('uncertain settings dispatch remains blocked after manual refresh',async()=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='settings')throw Error('lost reply');return {success:true,context:context()};});
+ await frame.onMessage.emit({kind:'sizeSettings'});await frame.onMessage.emit({kind:'refresh'});await frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);
+});
+for(const cause of ['failed','malformed','navigation','revision','duplicate'])it(`settings fresh inspect fences ${cause}`,async()=>{
+ const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);let finish;
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?new Promise(resolve=>finish=resolve):{success:true,reviewReady:true});
+ const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
+ if(cause==='navigation'){f.source.url='https://changed.test/';await f.api.tabs.onUpdated.emit(3,{url:f.source.url});}
+ if(cause==='revision')void frame.onMessage.emit({kind:'cancelDirect'});
+ if(cause==='duplicate')await frame.onMessage.emit({kind:'sizeSettings'});
+ finish(cause==='failed'?{success:false}: {success:true,context:cause==='malformed'?{...context(),viewId:'bad'}:context()});await work;
+ expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(cause==='duplicate'?1:0);
+});
+it('settings context preserves explicit root selection and placement lock while pending',async()=>{
+ const value=context();value.windows.push({id:11,title:'Other'});value.spaces.push({id:'b',bookmarkFolderId:'fb',name:'Work'});const f=await compactFixture(value);
+ document.getElementById('window').value='11';f.handlers.get('window:change')({isTrusted:true});document.getElementById('space').value='b';f.handlers.get('space:change')({isTrusted:true});
+ await f.frame.onMessage.emit({kind:'placementLocked'});await f.frame.onMessage.emit({kind:'settingsContext',context:value});
+ expect(document.getElementById('window').value).toBe('11');expect(document.getElementById('space').value).toBe('b');expect(document.getElementById('review').disabled).toBe(true);expect(document.getElementById('refresh').disabled).toBe(true);
+ await f.frame.onMessage.emit({kind:'reviewReady'});expect(document.getElementById('review').disabled).toBe(true);
 });

@@ -115,3 +115,6 @@ it('rejects a late offer after source focus and ignores old renewals',async()=>{
     const f=contentFixture(),old=await f.mount();f.listeners.get('pointerdown')({isTrusted:true});await old.p.onMessage.emit({kind:'lease',id:old.id,ms:4000,strength:55});expect(document.body.children.length).toBe(0);
     f.focus();await f.offer();expect(f.api.runtime.connect).toHaveBeenCalledTimes(1);
 });
+it('90 percent lease renders decorative black at 0.9 opacity',async()=>{const f=contentFixture(),{p,id}=await f.mount();await p.onMessage.emit({kind:'lease',id,ms:4000,strength:90});const host=document.body.firstElementChild;expect(host.style.background).toBe('rgba(0, 0, 0, 0.9)');expect(host.style.opacity).toBe('');expect(host.style.pointerEvents).toBe('none');});
+it.each([91,89.5])('invalid strength %s clears existing overlay',async strength=>{const f=contentFixture(),{p,id}=await f.mount();await p.onMessage.emit({kind:'lease',id,ms:4000,strength});expect(document.body.children.length).toBe(0);});
+it('broker admits saved 90 percent strength',async()=>{const f=fixture();f.settings.littleArcDimStrength=90;const {p,id}=await f.bind();expect(p.postMessage).toHaveBeenCalledWith({kind:'lease',id,ms:4000,strength:90});});
