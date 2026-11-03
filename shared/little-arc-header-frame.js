@@ -71,7 +71,7 @@ export function installLittleArcHeaderFrame({api=chrome,document=globalThis.docu
  };
  window.addEventListener('message',bootstrap);
  byId('choices').addEventListener('submit',event=>{event.preventDefault();if(!safeGesture(event)||pending||closed||reviewUsed||locked)return;const target=selected();if(!target)return;if(context?.directEnabled){pending=true;controls();status.hidden=false;status.textContent='Checking this destination and placing this page. Do not repeat an uncertain transfer.';presentation();send({kind:'placeDirect',target});return;}review(target);});
- byId('size-settings')?.addEventListener('click',event=>{if(!event.isTrusted||pending||closed||!context||reviewUsed)return;pending=true;controls();status.hidden=false;status.textContent='Opening trusted window size settings. Nothing has moved.';presentation();send({kind:'sizeSettings'});});
+ byId('size-settings')?.addEventListener('click',event=>{if(!event.isTrusted||pending||closed||!context||reviewUsed)return;pending=true;controls();status.hidden=false;status.textContent='Opening trusted Little Arc settings. Nothing has moved.';presentation();send({kind:'sizeSettings'});});
  byId('controls').addEventListener('click',event=>{if(event.isTrusted)review(null);});
  byId('refresh').addEventListener('click',event=>{if(event.isTrusted&&!pending){pending=true;controls();send({kind:'refresh'});}});
  byId('dismiss').addEventListener('click',event=>{if(event.isTrusted){send({kind:'cancelDirect'});closePicker();byId('expanded').hidden=true;byId('reopen').hidden=false;presentation();byId('reopen').focus();}});

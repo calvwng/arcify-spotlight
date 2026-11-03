@@ -1,5 +1,6 @@
 import { PEER_KEY, PAIRING_GENERATION_KEY } from './arcify-bridge-protocol.js';
-export const DIM_KEY = 'littleArcDimSource';
+import { DIM_KEY, DIM_STRENGTH_KEY, readDimmingPreference } from './little-arc-dimming-preferences.js';
+export { DIM_KEY } from './little-arc-dimming-preferences.js';
 export const DIM_PORT = 'little-arc-cosmetic-v1';
 export const DIM_OFFER = 'littleArcDimOffer';
 const LEASE_MS = 4000, MAX_MS = 600000;
@@ -16,18 +17,21 @@ export function createSourceDimming(api, { now = Date.now } = {}) {
     };
     const valid = async lease => {
         const [settings, source, origin, target, destination] = await Promise.all([
-            api.storage.local.get([DIM_KEY, 'peekEnabled', PEER_KEY, PAIRING_GENERATION_KEY]),
+            api.storage.local.get([DIM_KEY, DIM_STRENGTH_KEY, 'peekEnabled', PEER_KEY, PAIRING_GENERATION_KEY]),
             api.tabs.get(lease.source.tabId), api.windows.get(lease.source.windowId),
             api.tabs.get(lease.target.tabId), api.windows.get(lease.target.windowId)
         ]);
-        return !disposed && leases.get(lease.source.tabId) === lease && now() < lease.expires
-            && settings[DIM_KEY] === true && settings.peekEnabled === true
+        const preference = readDimmingPreference(settings);
+        const live = !disposed && leases.get(lease.source.tabId) === lease && now() < lease.expires
+            && preference.enabled && settings.peekEnabled === true
             && settings[PEER_KEY] === lease.pair.peerId && (settings[PAIRING_GENERATION_KEY] ?? null) === lease.pair.generation
             && source.id === lease.source.tabId && source.windowId === lease.source.windowId && source.url === lease.source.url
             && !source.pendingUrl && source.active && !source.incognito
             && origin.id === lease.source.windowId && origin.type === 'normal' && !origin.incognito && !origin.focused
             && target.id === lease.target.tabId && target.windowId === lease.target.windowId && target.active && !target.incognito
             && destination.id === lease.target.windowId && destination.type === 'normal' && !destination.incognito && destination.focused;
+        if (live) lease.strength = preference.strength;
+        return live;
     };
     async function start(source, documentId, target, pair) {
         // Copy only the minimal cosmetic association, never the broker session.
@@ -61,7 +65,7 @@ export function createSourceDimming(api, { now = Date.now } = {}) {
                 if (!await valid(lease) || leases.get(lease.source.tabId) !== lease) return clear(lease);
                 bound = true; clearTimeout(lease.timer);
                 lease.timer = setTimeout(() => clear(lease), LEASE_MS);
-                port.postMessage({ kind: 'lease', id: lease.id, ms: Math.min(LEASE_MS, lease.expires - now()) });
+                port.postMessage({ kind: 'lease', id: lease.id, ms: Math.min(LEASE_MS, lease.expires - now()), strength: lease.strength });
             } catch { clear(lease); } finally { checking = false; }
         });
     });
@@ -72,6 +76,6 @@ export function createSourceDimming(api, { now = Date.now } = {}) {
     listen(api.tabs.onActivated, info => { for (const lease of [...leases.values()]) if (info.windowId === lease.source.windowId && info.tabId !== lease.source.tabId || info.windowId === lease.target.windowId && info.tabId !== lease.target.tabId) clear(lease); });
     listen(api.windows.onRemoved, id => { for (const lease of [...leases.values()]) if ([lease.source.windowId, lease.target.windowId].includes(id)) clear(lease); });
     listen(api.windows.onFocusChanged, id => { for (const lease of [...leases.values()]) if (id !== lease.target.windowId) clear(lease); });
-    listen(api.storage.onChanged, (changes, area) => { if (area === 'local' && [DIM_KEY, 'peekEnabled', PEER_KEY, PAIRING_GENERATION_KEY].some(key => Object.hasOwn(changes, key))) for (const lease of [...leases.values()]) clear(lease); });
+    listen(api.storage.onChanged, (changes, area) => { if (area === 'local' && [DIM_KEY, DIM_STRENGTH_KEY, 'peekEnabled', PEER_KEY, PAIRING_GENERATION_KEY].some(key => Object.hasOwn(changes, key))) for (const lease of [...leases.values()]) clear(lease); });
     return { start, dispose() { disposed = true; for (const lease of [...leases.values()]) clear(lease); removers.forEach(remove => remove()); } };
 }

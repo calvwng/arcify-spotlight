@@ -23,7 +23,7 @@ function fixture() {
 it('routes only to exact document/frame and binds a separate cosmetic port despite stale sender URL', async () => {
     const f=fixture(), {p,id}=await f.bind();
     expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(1,{type:DIM_OFFER,id,url:source.url},{documentId:'doc',frameId:0});
-    expect(p.postMessage).toHaveBeenCalledWith({kind:'lease',id,ms:4000});
+    expect(p.postMessage).toHaveBeenCalledWith({kind:'lease',id,ms:4000,strength:55});
     expect(JSON.stringify(p.postMessage.mock.calls)).not.toMatch(/operation|connection|authorization/);
 });
 for (const cause of ['off','unpaired','generation','sourceFocus','sourceMoved','sourceUrl','sourceInactive','destinationMoved','destinationFocus','private','sameWindow']) it(`does not offer dimming when ${cause}`,async()=>{
@@ -81,12 +81,28 @@ function contentFixture() {
     const ports=[];const api={runtime:{id:SELF,onMessage:event(),connect:vi.fn(()=>{const p={onMessage:event(),onDisconnect:event(),postMessage:vi.fn(),disconnect:vi.fn()};ports.push(p);return p;})}};
     const control=installSourceDimming({api,document,window:win});cleanups.push(()=>control.dispose());
     const offer=async()=>{const id=crypto.randomUUID();control.receive({type:DIM_OFFER,id,url:source.url},{id:SELF});return {p:ports.at(-1),id};};
-    const mount=async()=>{const v=await offer();await v.p.onMessage.emit({kind:'lease',id:v.id,ms:4000});return v;};
+    const mount=async()=>{const v=await offer();await v.p.onMessage.emit({kind:'lease',id:v.id,ms:4000,strength:55});return v;};
     return {api,win,listeners,ports,offer,mount,focus:()=>focused=true};
 }
 it('decorative dimming never traps focus or pointer events, and has no motion',async()=>{
     const f=contentFixture();await f.mount();const host=document.body.firstElementChild;
     expect(host.getAttribute('aria-hidden')).toBe('true');expect(host.style.pointerEvents).toBe('none');expect(host.hasAttribute('tabindex')).toBe(false);expect(host.hasAttribute('inert')).toBe(false);expect(host.style.animation).toBe('');expect(host.style.transition).toBe('');
+    expect(host.style.background).toBe('rgba(0, 0, 0, 0.55)');
+});
+it('renders only validated lease strength and clears malformed renewals',async()=>{
+    const f=contentFixture(),{p,id}=await f.mount();await p.onMessage.emit({kind:'lease',id,ms:4000,strength:70});
+    expect(document.body.firstElementChild.style.background).toBe('rgba(0, 0, 0, 0.7)');
+    await p.onMessage.emit({kind:'lease',id,ms:4000,strength:'70'});expect(document.body.children.length).toBe(0);
+});
+it('a legacy lease without strength fails clear rather than guessing opacity',async()=>{
+    const f=contentFixture(),{p,id}=await f.mount();await p.onMessage.emit({kind:'lease',id,ms:4000});expect(document.body.children.length).toBe(0);
+});
+it('broker passes saved strength and settings changes retire rather than revive the lease',async()=>{
+    const f=fixture();f.settings.littleArcDimStrength=75;const {p,id}=await f.bind();expect(p.postMessage).toHaveBeenCalledWith({kind:'lease',id,ms:4000,strength:75});
+    await f.api.storage.onChanged.emit({littleArcDimStrength:{newValue:55}},'local');p.postMessage.mockClear();await p.onMessage.emit({kind:'pulse',id});expect(p.postMessage).not.toHaveBeenCalled();
+});
+it('broker skips dimming for malformed saved strength without touching launch behavior',async()=>{
+    const f=fixture();f.settings.littleArcDimStrength=0.7;await f.start();expect(f.api.tabs.sendMessage).not.toHaveBeenCalled();
 });
 for(const cause of ['focus','pointerdown','keydown','pagehide','disconnect','timeout','navigation'])it(`content clears on ${cause} without blocking source input`,async()=>{
     const f=contentFixture(),{p}=await f.mount();const input={isTrusted:true,preventDefault:vi.fn(),stopPropagation:vi.fn()};
@@ -96,6 +112,6 @@ for(const cause of ['focus','pointerdown','keydown','pagehide','disconnect','tim
     expect(document.body.children.length).toBe(0);expect(input.preventDefault).not.toHaveBeenCalled();expect(input.stopPropagation).not.toHaveBeenCalled();
 });
 it('rejects a late offer after source focus and ignores old renewals',async()=>{
-    const f=contentFixture(),old=await f.mount();f.listeners.get('pointerdown')({isTrusted:true});await old.p.onMessage.emit({kind:'lease',id:old.id,ms:4000});expect(document.body.children.length).toBe(0);
+    const f=contentFixture(),old=await f.mount();f.listeners.get('pointerdown')({isTrusted:true});await old.p.onMessage.emit({kind:'lease',id:old.id,ms:4000,strength:55});expect(document.body.children.length).toBe(0);
     f.focus();await f.offer();expect(f.api.runtime.connect).toHaveBeenCalledTimes(1);
 });

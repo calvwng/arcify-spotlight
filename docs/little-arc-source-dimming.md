@@ -1,6 +1,12 @@
 # Optional source-page dimming
 
-Enable **Dim the source page while its Little Arc window is focused** in Spotlight's Shift-click settings. It is off by default and applies only to successfully acknowledged Shift-click/Peek → Little Arc launches. Context-menu, Spotlight search, and other opening routes are unchanged.
+Open **More → Little Arc settings → Source page dimming** in Little Arc. Enable dimming and choose a darkness percentage, then Save. The controller's sample preview is illustrative; editing it does not revive a real source-page lease. Cancel discards the draft. Dimming remains off by default, and an existing enabled setting is preserved. It applies only to successfully acknowledged Shift-click/Peek → Little Arc launches. Context-menu, Spotlight search, and other opening routes are unchanged.
+
+Darkness is an integer percentage from 15 to 75. If no strength has been saved, the darker default is 55% (previously the fixed shade was 28%). The rendered black overlay uses that percentage as its alpha; 70% is darker than 55%. Existing explicit strength values are preserved. Malformed saved data fails closed and is reported without silently replacing it.
+
+Spotlight remains the single storage authority: `littleArcDimSource` is the existing enabled boolean and `littleArcDimStrength` is the new integer percentage. Reading missing preferences does not write storage. The trusted Arcify controller proxies paired background requests; Spotlight serializes compare-and-set with full expected enabled/strength values and verifies readback. Immediately before a changed write, Spotlight requires a bounded, one-use callback proving Arcify still owns the exact pending request and controller. Timeout, changed pairing, expired controller or stale settings fail closed without retry. Cross-extension/native operations cannot provide an atomic transaction across the final proof and storage dispatch; a write already sent is not rolled back on a lost reply.
+
+The old editable Spotlight options toggle is replaced by directions to Little Arc settings. Older Arcify builds can still open the existing settings route, but need an update for the new controls. Older Spotlight builds do not support the preferences endpoint; the trusted controls must report unavailable rather than creating a second settings copy. Settings changes retire existing cosmetic leases; the next successful launch uses the saved strength.
 
 Only the verified source document is dimmed. The overlay is decorative, static, hidden from assistive technology, and ignores pointer input. It does not change page focus, keyboard navigation, accessibility state, or browser focus. Static rendering also respects reduced-motion preferences without an animation.
 

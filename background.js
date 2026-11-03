@@ -1,6 +1,7 @@
 import { createHelperSourceCapture, installHelperSourceValidation } from './shared/helper-source.js';
 import { createRoutedSourceCapture, installRoutedSourceValidation } from './shared/routed-open-source.js';
 import { installPeekBroker } from './shared/peek-broker.js';
+import { installDimmingPreferences } from './shared/little-arc-dimming-preferences.js';
 import { installLittleArcHeaderBroker } from './shared/little-arc-header-broker.js';
 import { installArcifyTransientActionMessages } from './shared/arcify-transient-actions.js';
 import { installFavoriteWitness } from './shared/favorite-witness.js';
@@ -36,6 +37,7 @@ import { boundedOverlayDelivery, captureOverlayCommand, installOverlayRecoveryVa
 installFavoriteWitness(chrome, arcifyBridge.favoriteWitness);
 installLittleArcHeaderBroker(chrome);
 installPeekBroker(chrome);
+installDimmingPreferences(chrome);
 installArcifySplitActionMessages(chrome, arcifyBridge);
 const activeNewTabReuse = createActiveNewTabReuse(chrome);
 const captureRoutedSource = createRoutedSourceCapture(chrome);

@@ -1,4 +1,5 @@
 // Isolated-world cosmetic receiver. No page messages or DOM-stored credentials.
+import { validDimStrength } from './little-arc-dimming-preferences.js';
 const PORT = 'little-arc-cosmetic-v1', OFFER = 'littleArcDimOffer';
 export function installSourceDimming({ api = chrome, document = globalThis.document, window = globalThis.window } = {}) {
     let current = null, disposed = false;
@@ -21,15 +22,16 @@ export function installSourceDimming({ api = chrome, document = globalThis.docum
         port.onDisconnect.addListener(() => { void api.runtime.lastError; if (current === lease) clear(); });
         port.onMessage.addListener(value => {
             if (current !== lease) return;
-            if (value?.kind !== 'lease' || value.id !== lease.id || !Number.isFinite(value.ms) || value.ms <= 0 || value.ms > 4000
+            if (value?.kind !== 'lease' || value.id !== lease.id || !Number.isFinite(value.ms) || value.ms <= 0 || value.ms > 4000 || !validDimStrength(value.strength)
                 || Date.now() >= lease.deadline || !safe(lease.url)) return clear();
             clearTimeout(lease.timer); lease.timer = setTimeout(expire, Math.min(value.ms, lease.deadline - Date.now()));
             if (!lease.host) {
                 const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
                 // Static opacity: no animation, including when reduced motion is requested.
-                for (const [name, value] of Object.entries({ all: 'initial', position: 'fixed', inset: '0', 'z-index': '2147483646', 'pointer-events': 'none', background: 'rgba(0,0,0,.28)', display: 'block' })) host.style.setProperty(name, value, 'important');
+                for (const [name, value] of Object.entries({ all: 'initial', position: 'fixed', inset: '0', 'z-index': '2147483646', 'pointer-events': 'none', display: 'block' })) host.style.setProperty(name, value, 'important');
                 document.body.append(host); lease.host = host;
             }
+            lease.host.style.setProperty('background', `rgba(0,0,0,${value.strength / 100})`, 'important');
         });
         const pulse = () => {
             if (current !== lease) return;
