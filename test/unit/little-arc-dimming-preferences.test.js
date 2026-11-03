@@ -22,7 +22,7 @@ it('defaults only absent values without writing or changing existing enabled sta
     expect(readDimmingPreference({[DIM_KEY]:true})).toEqual({enabled:true,strength:55});
     const f=fixture({[DIM_KEY]:true});expect(await f.send(f.request())).toMatchObject({success:true,preference:{enabled:true,strength:55}});expect(f.api.storage.local.set).not.toHaveBeenCalled();
 });
-for(const strength of [null,'55',14,91,55.5,NaN,Infinity])it(`fails closed for saved strength ${strength}`,async()=>{
+for(const strength of [null,'55',14,101,55.5,NaN,Infinity])it(`fails closed for saved strength ${strength}`,async()=>{
     const f=fixture({[DIM_KEY]:true,[DIM_STRENGTH_KEY]:strength});expect(await f.send(f.request())).toMatchObject({success:false,error:{code:'INVALID_PREFERENCE'}});expect(f.api.storage.local.set).not.toHaveBeenCalled();
 });
 it('fails closed for a malformed saved enabled flag',async()=>{
@@ -36,7 +36,7 @@ it('serializes full compare/write/readback and rejects stale concurrent settings
 for(const cause of ['tab','otherPeer','popup','origin','version','extra','fraction','range','string','missingExpected'])it(`rejects ${cause} before writing`,async()=>{
     const f=fixture(),sender={...f.sender},request=f.request('set',{expected:{enabled:false,strength:55},preference:{enabled:true,strength:70}});
     if(cause==='tab')sender.tab={id:1};if(cause==='otherPeer')sender.id=SELF;if(cause==='popup')sender.url=`chrome-extension://${PEER}/options.html`;if(cause==='origin')sender.origin='https://wrong.test';
-    if(cause==='version')request.version=2;if(cause==='extra')request.extra=true;if(cause==='fraction')request.preference.strength=55.5;if(cause==='range')request.preference.strength=91;if(cause==='string')request.preference.enabled='true';if(cause==='missingExpected')delete request.expected;
+    if(cause==='version')request.version=2;if(cause==='extra')request.extra=true;if(cause==='fraction')request.preference.strength=55.5;if(cause==='range')request.preference.strength=101;if(cause==='string')request.preference.enabled='true';if(cause==='missingExpected')delete request.expected;
     expect(await f.send(request,sender)).toMatchObject({success:false});expect(f.api.storage.local.set).not.toHaveBeenCalled();
 });
 for(const cause of ['denied','missing','wrongId','extra','pairing','disposed'])it(`final authorization ${cause} prevents storage write`,async()=>{
@@ -77,5 +77,7 @@ it('its own storage change event does not misclassify a verified save as stale',
     const f=fixture();f.api.storage.local.set.mockImplementation(async values=>{Object.assign(f.saved,values);f.api.storage.onChanged.emit(Object.fromEntries(Object.entries(values).map(([key,newValue])=>[key,{newValue}])),'local');});
     expect(await f.set({enabled:false,strength:55},{enabled:true,strength:70})).toMatchObject({success:true,preference:{enabled:true,strength:70}});
 });
-it.each([15,55,75,90])('preserves valid saved strength %s without migration',async strength=>{const f=fixture({[DIM_KEY]:true,[DIM_STRENGTH_KEY]:strength});expect(await f.send(f.request())).toMatchObject({success:true,preference:{enabled:true,strength}});expect(f.api.storage.local.set).not.toHaveBeenCalled();});
+it.each([15,55,75,90,100])('preserves valid saved strength %s without migration',async strength=>{const f=fixture({[DIM_KEY]:true,[DIM_STRENGTH_KEY]:strength});expect(await f.send(f.request())).toMatchObject({success:true,preference:{enabled:true,strength}});expect(f.api.storage.local.set).not.toHaveBeenCalled();});
 it('explicit CAS accepts the new 90 percent endpoint',async()=>{const f=fixture();expect(await f.set({enabled:false,strength:55},{enabled:true,strength:90})).toMatchObject({success:true,preference:{enabled:true,strength:90}});});
+
+it('explicit CAS accepts100percent without changing its meaning',async()=>{const f=fixture();expect(await f.set({enabled:false,strength:55},{enabled:true,strength:100})).toMatchObject({success:true,preference:{enabled:true,strength:100}});});

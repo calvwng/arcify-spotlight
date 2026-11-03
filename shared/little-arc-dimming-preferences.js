@@ -9,7 +9,7 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
     && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
-export const validDimStrength = value => Number.isInteger(value) && value >= 15 && value <= 90;
+export const validDimStrength = value => Number.isInteger(value) && value >= 15 && value <= 100;
 export const validDimPreference = value => exact(value, ['enabled', 'strength']) && typeof value.enabled === 'boolean' && validDimStrength(value.strength);
 const same = (a, b) => a.enabled === b.enabled && a.strength === b.strength;
 

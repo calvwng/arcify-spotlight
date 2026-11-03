@@ -12,7 +12,7 @@ function fixture(){
  const source={id:3,windowId:20,url:'https://page.test/',incognito:false,active:true};
  const storage={arcifyBridgePeerId:PEER,arcifyBridgePairingGeneration:'g'},sessionData={};
  const api={runtime:{id:SELF,getURL:p=>`chrome-extension://${SELF}/${p}`,onConnect:event(),onMessage:event(),onMessageExternal:event(),sendMessage:vi.fn(async(_peer,request)=>request.action==='inspect'?{success:true,context:context()}:{success:true,reviewReady:true})},storage:{local:{get:async()=>structuredClone(storage)},session:{get:async()=>structuredClone(sessionData),set:async v=>Object.assign(sessionData,structuredClone(v))},onChanged:event()},
- tabs:{get:async()=>structuredClone(source),sendMessage:vi.fn(async()=>{}),onUpdated:event(),onRemoved:event(),onAttached:event(),onDetached:event(),onReplaced:event()},windows:{get:async()=>({id:20,type:'normal',incognito:false,focused:true}),onRemoved:event()}};
+ tabs:{get:async()=>structuredClone(source),sendMessage:vi.fn(async()=>{}),onUpdated:event(),onActivated:event(),onRemoved:event(),onAttached:event(),onDetached:event(),onReplaced:event()},windows:{get:async()=>({id:20,type:'normal',incognito:false,focused:true}),onFocusChanged:event(),onRemoved:event()}};
  const broker=installLittleArcHeaderBroker(api);const ports=[];
  const port=(name,sender)=>{let closed=false;const p={name,sender,onMessage:event(),onDisconnect:event(),postMessage:vi.fn(),disconnect:vi.fn(()=>{if(closed)return;closed=true;void p.onDisconnect.emit();})};ports.push(p);return p;};
  const top=()=>port(HEADER_TOP_PORT,{id:SELF,frameId:0,url:source.url,origin:'https://page.test',tab:{...source}});
@@ -401,3 +401,41 @@ it('settings context preserves explicit root selection and placement lock while 
  expect(document.getElementById('window').value).toBe('11');expect(document.getElementById('space').value).toBe('b');expect(document.getElementById('review').disabled).toBe(true);expect(document.getElementById('refresh').disabled).toBe(true);
  await f.frame.onMessage.emit({kind:'reviewReady'});expect(document.getElementById('review').disabled).toBe(true);
 });
+async function recoveryFixture(){
+ const f=fixture();cleanups.push(f.dispose);const missing={...context(),directEnabled:false,controlsMissing:true};
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:missing}:{success:true,reviewReady:true});
+ const top=f.top();top.sender.documentId='source-document';await f.api.runtime.onConnect.emit(top);await top.onMessage.emit({kind:'hello'});const frame=await f.bind(top);
+ const challenge=top.postMessage.mock.calls.find(([m])=>m.kind==='mount')[0].challenge;f.api.tabs.sendMessage.mockResolvedValue({challenge,url:f.source.url,safe:true});
+ const authority=(r,stage,patch={})=>new Promise(resolve=>f.api.runtime.onMessageExternal.emit({type:'littleArcControlsRecoveryAuthority',stage,source:r.source,viewId:r.viewId,connection:r.connection,requestId:r.requestId,...patch},{id:PEER,url:`chrome-extension://${PEER}/background.js`},resolve));
+ return {...f,top,frame,missing,authority};
+}
+it('missing controller remains readonly until explicit settings recovers once with two one-use document proofs',async()=>{
+ const f=await recoveryFixture();await f.frame.onMessage.emit({kind:'refresh'});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='recoverControls')).toBe(false);
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};expect(r.action).toBe('recoverControls');expect(await f.authority(r,'commit')).toEqual({authorized:false});expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'prepare')).toEqual({authorized:false});expect(await f.authority(r,'commit')).toEqual({authorized:true});return {success:true,reviewReady:true};});
+ await f.frame.onMessage.emit({kind:'sizeSettings'});await f.frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='recoverControls')).toHaveLength(1);expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='settings')).toBe(false);expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(3,{type:'littleArcHeaderLiveProbe'},{frameId:0,documentId:'source-document'});
+});
+for(const cause of ['lostReply','missingProof','navigation','wrongPayload','changedPair'])it(`recovery ${cause} never replays after refresh`,async()=>{
+ const f=await recoveryFixture();f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};
+ if(cause==='missingProof')return {success:true,reviewReady:true};
+ if(cause==='navigation'){await f.api.tabs.onUpdated.emit(3,{status:'loading'});expect(await f.authority(r,'prepare')).toEqual({authorized:false});}
+ else if(cause==='wrongPayload')expect(await f.authority(r,'prepare',{viewId:'22222222-2222-4222-8222-222222222222'})).toEqual({authorized:false});
+ else if(cause==='changedPair'){f.storage.arcifyBridgePairingGeneration='changed';expect(await f.authority(r,'prepare')).toEqual({authorized:false});}
+ else {expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'commit')).toEqual({authorized:true});}
+ throw Error('uncertain recovery');});
+ await f.frame.onMessage.emit({kind:'sizeSettings'});await f.frame.onMessage.emit({kind:'refresh'});await f.frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='recoverControls')).toHaveLength(1);expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='settings'||r.action==='directPlace'||r.action==='review')).toBe(false);
+});
+it('missing controller context disables placement and review while leaving deliberate settings usable',async()=>{const f=await compactFixture({...context(),directEnabled:false,controlsMissing:true});expect(document.getElementById('review').disabled).toBe(true);expect(document.getElementById('controls').disabled).toBe(true);expect(document.getElementById('size-settings').disabled).toBe(false);f.click('size-settings');expect(f.frame.postMessage).toHaveBeenCalledWith({kind:'sizeSettings'});});
+it('invalid missing-controller metadata cannot enable placement',()=>{for(const controlsMissing of [false,'true'])expect(()=>validateHeaderContext({...context(),directEnabled:false,controlsMissing})).toThrow();expect(()=>validateHeaderContext({...context(),directEnabled:true,controlsMissing:true})).toThrow();});
+it.each(['beforeReply','afterReply'])('source return %s refreshes only choices and permits a new settings intent',async ordering=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());let finish;
+ // Start with an ordinary view so this operation is settings, not recovery.
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:context()}:new Promise(resolve=>finish=resolve));
+ const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
+ if(ordering==='beforeReply')await f.api.tabs.onActivated.emit({tabId:3,windowId:20});
+ finish({success:true,reviewReady:true});await work;
+ if(ordering==='afterReply')await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();
+ expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);
+ const again=frame.onMessage.emit({kind:'sizeSettings'});await flush();finish({success:true,reviewReady:true});await again;expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
+});
+it('source focus after uncertain settings never clears dispatch lock or retries',async()=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:context()};throw Error('lost');});await frame.onMessage.emit({kind:'sizeSettings'});const calls=f.api.runtime.sendMessage.mock.calls.length;await f.api.windows.onFocusChanged.emit(20);await flush();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(calls);expect(f.broker.sessions.get(3).settingsDispatched).toBe(true);});
+it.each(['navigation','move'])('source %s during return inspect cannot restore stale controls',async cause=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());await frame.onMessage.emit({kind:'sizeSettings'});const before=frame.postMessage.mock.calls.filter(([m])=>m.kind==='context').length;let finish;f.api.runtime.sendMessage.mockImplementation(()=>new Promise(resolve=>finish=resolve));await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();expect(finish).toBeTypeOf('function');if(cause==='navigation')await f.api.tabs.onUpdated.emit(3,{status:'loading'});else await f.api.tabs.onDetached.emit(3);finish({success:true,context:context()});await flush();expect(frame.postMessage.mock.calls.filter(([m])=>m.kind==='context')).toHaveLength(before);expect(frame.disconnect).toHaveBeenCalled();});
