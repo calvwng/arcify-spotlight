@@ -43,7 +43,7 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
   s.inFlight=true;s.returnRequested=false;const revision=s.revision=(s.revision??0)+1;
   try{await sourceLive(s,true);const context=await prepare(s);if(!s.alive||s.revision!==revision||!context)return;s.settingsUsed=false;post(s.frame,{kind:'context',context});if(s.locked)post(s.frame,{kind:'placementLocked'});}
   catch{if(s.alive)post(s.frame,{kind:'error',message:error().message});}
-  finally{s.inFlight=false;}
+  finally{s.inFlight=false;if(s.returnRequested){s.returnRequested=false;void refreshReturned(s);}}
  };
  const connected=port=>{
   const sender=port.sender;
@@ -155,6 +155,17 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
 
  };
  listen(api.runtime.onMessageExternal,(message,sender,respond)=>{
+  if(message?.type==='littleArcControlsClosed'){
+   const refreshClosed=async()=>{
+    if(!exact(message,['type','version','generation','source'])||message.version!==1||!exact(message.source,['tabId','windowId','url']))return {accepted:false};
+    const s=sessions.get(message.source.tabId),pair=await pairing();
+    if(!s?.alive||sessions.get(s.source.tabId)!==s||message.generation!==pair.generation||sender.id!==pair.peerId||sender.tab||sender.url&&sender.url!==`chrome-extension://${pair.peerId}/background.js`||sender.origin&&sender.origin!==`chrome-extension://${pair.peerId}`||pair.peerId!==s.pair.peerId||pair.generation!==s.pair.generation||!['tabId','windowId','url'].every(k=>s.source[k]===message.source[k]))return {accepted:false};
+    await directLive(s);const after=await pairing();
+    if(!s.alive||sessions.get(s.source.tabId)!==s||after.peerId!==pair.peerId||after.generation!==pair.generation)return {accepted:false};
+    await refreshReturned(s);return {accepted:true};
+   };
+   refreshClosed().then(respond,()=>respond({accepted:false}));return true;
+  }
   if(message?.type===RECOVERY_AUTHORITY){
    const verifyRecovery=async()=>{
     if(!exact(message,['type','stage','source','viewId','connection','requestId'])||!['prepare','commit'].includes(message.stage)||!exact(message.source,['tabId','windowId','url']))return {authorized:false};
