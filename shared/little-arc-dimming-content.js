@@ -8,14 +8,14 @@ export function installSourceDimming({ api = chrome, document = globalThis.docum
         clearTimeout(old.timer); clearInterval(old.pulse); old.host?.remove();
         try { old.port.disconnect(); } catch {}
     };
-    const safe = url => window.top === window && window.location.href === url && document.body
-        && document.visibilityState === 'visible' && !document.hasFocus() && !document.fullscreenElement && !document.prerendering;
+    const safe = (url, initial = false) => window.top === window && window.location.href === url && document.body
+        && (!initial || document.visibilityState === 'visible') && !(document.visibilityState === 'visible' && document.hasFocus()) && !document.fullscreenElement && !document.prerendering;
     const offer = (message, sender) => {
         if (disposed || message?.type !== OFFER || sender.id !== api.runtime.id || sender.tab
-            || typeof message.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(message.id) || !safe(message.url)) return;
+            || typeof message.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(message.id) || !safe(message.url, true)) return;
         clear();
         let port; try { port = api.runtime.connect({ name: PORT }); } catch { return; }
-        const lease = { id: message.id, url: message.url, port, host: null, deadline: Date.now() + 600000 };
+        const lease = { id: message.id, url: message.url, port, host: null, deadline: Date.now() + 600000, renewBy: Date.now() + 4000 };
         current = lease;
         const expire = () => { if (current === lease) clear(); };
         lease.timer = setTimeout(expire, 4000);
@@ -23,8 +23,8 @@ export function installSourceDimming({ api = chrome, document = globalThis.docum
         port.onMessage.addListener(value => {
             if (current !== lease) return;
             if (value?.kind !== 'lease' || value.id !== lease.id || !Number.isFinite(value.ms) || value.ms <= 0 || value.ms > 4000 || !validDimStrength(value.strength)
-                || Date.now() >= lease.deadline || !safe(lease.url)) return clear();
-            clearTimeout(lease.timer); lease.timer = setTimeout(expire, Math.min(value.ms, lease.deadline - Date.now()));
+                || Date.now() >= lease.deadline || Date.now() >= lease.renewBy || !safe(lease.url)) return clear();
+            lease.renewBy = Date.now() + value.ms; clearTimeout(lease.timer); lease.timer = setTimeout(expire, Math.min(value.ms, lease.deadline - Date.now()));
             if (!lease.host) {
                 const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
                 // Static opacity: no animation, including when reduced motion is requested.
@@ -35,13 +35,13 @@ export function installSourceDimming({ api = chrome, document = globalThis.docum
         });
         const pulse = () => {
             if (current !== lease) return;
-            if (!safe(lease.url) || Date.now() >= lease.deadline || !api.runtime.id) return clear();
+            if (!safe(lease.url) || Date.now() >= lease.deadline || Date.now() >= lease.renewBy || !api.runtime.id) return clear();
             try { port.postMessage({ kind: 'pulse', id: lease.id }); } catch { clear(); }
         };
         lease.pulse = setInterval(pulse, 1500);
         try { port.postMessage({ kind: 'bind', id: lease.id }); return true; } catch { clear(); }
     };
-    const interact = event => { if (event.isTrusted) clear(); };
+    const interact = event => { if (event.isTrusted && (event.type !== 'focus' || document.visibilityState === 'visible' && document.hasFocus())) clear(); };
     const changed = () => { if (current && !safe(current.url)) clear(); };
     for (const type of ['pointerdown', 'keydown', 'focus']) window.addEventListener(type, interact, true);
     for (const type of ['pagehide', 'popstate', 'hashchange']) window.addEventListener(type, clear);
