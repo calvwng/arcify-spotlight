@@ -6,6 +6,7 @@ export const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.k
 export const positive=n=>Number.isSafeInteger(n)&&n>0;
 export const uuid=s=>typeof s==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s);
 export function validateHeaderContext(c){
+ if(c&&Object.hasOwn(c,'controlsMissing')){if(c.controlsMissing!==true||c.directEnabled!==false)throw Error('Invalid missing controls state.');const {controlsMissing,...rest}=c;validateHeaderContext(rest);return c;}
  if(c&&Object.hasOwn(c,'themeMode')){if(!['light','dark','system'].includes(c.themeMode))throw Error('Invalid theme mode.');const {themeMode,...rest}=c;validateHeaderContext(rest);return c;}
  if(c&&Object.hasOwn(c,'siteHostname')){if(typeof c.siteHostname!=='string'||c.siteHostname.length>253||!c.siteHostname||/[\s\/\\<>]/.test(c.siteHostname))throw Error('Invalid site identity.');const {siteHostname,...rest}=c;validateHeaderContext(rest);return c;}
  const text=s=>typeof s==='string'&&s.length>0&&s.length<=200;

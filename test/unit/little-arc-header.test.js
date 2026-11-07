@@ -12,7 +12,7 @@ function fixture(){
  const source={id:3,windowId:20,url:'https://page.test/',incognito:false,active:true};
  const storage={arcifyBridgePeerId:PEER,arcifyBridgePairingGeneration:'g'},sessionData={};
  const api={runtime:{id:SELF,getURL:p=>`chrome-extension://${SELF}/${p}`,onConnect:event(),onMessage:event(),onMessageExternal:event(),sendMessage:vi.fn(async(_peer,request)=>request.action==='inspect'?{success:true,context:context()}:{success:true,reviewReady:true})},storage:{local:{get:async()=>structuredClone(storage)},session:{get:async()=>structuredClone(sessionData),set:async v=>Object.assign(sessionData,structuredClone(v))},onChanged:event()},
- tabs:{get:async()=>structuredClone(source),sendMessage:vi.fn(async()=>{}),onUpdated:event(),onRemoved:event(),onAttached:event(),onDetached:event(),onReplaced:event()},windows:{get:async()=>({id:20,type:'normal',incognito:false,focused:true}),onRemoved:event()}};
+ tabs:{get:async()=>structuredClone(source),sendMessage:vi.fn(async()=>{}),onUpdated:event(),onActivated:event(),onRemoved:event(),onAttached:event(),onDetached:event(),onReplaced:event()},windows:{get:async()=>({id:20,type:'normal',incognito:false,focused:true}),onFocusChanged:event(),onRemoved:event()}};
  const broker=installLittleArcHeaderBroker(api);const ports=[];
  const port=(name,sender)=>{let closed=false;const p={name,sender,onMessage:event(),onDisconnect:event(),postMessage:vi.fn(),disconnect:vi.fn(()=>{if(closed)return;closed=true;void p.onDisconnect.emit();})};ports.push(p);return p;};
  const top=()=>port(HEADER_TOP_PORT,{id:SELF,frameId:0,url:source.url,origin:'https://page.test',tab:{...source}});
@@ -85,7 +85,7 @@ it('bound acknowledgement cancels fallback timeout and leaves controller overlay
 async function compactFixture(value=context()){
  const {readFileSync}=await import('node:fs');document.body.innerHTML=readFileSync('little-arc-header.html','utf8');
  const f=fixture();cleanups.push(f.dispose);const frame=f.port(HEADER_FRAME_PORT,{});f.api.runtime.connect=vi.fn(()=>frame);const handlers=new Map(),messages=new Map();
- for(const id of ['choices','space','window','controls','refresh','dismiss','reopen','more','space-menu-toggle','space-search']){const node=document.getElementById(id),original=node.addEventListener.bind(node);node.addEventListener=(type,handler)=>{handlers.set(`${id}:${type}`,handler);original(type,handler);};}
+ for(const id of ['choices','space','window','controls','refresh','dismiss','reopen','more','space-menu-toggle','space-search','size-settings']){const node=document.getElementById(id),original=node.addEventListener.bind(node);node.addEventListener=(type,handler)=>{handlers.set(`${id}:${type}`,handler);original(type,handler);};}
  const w={parent:{},addEventListener:(type,handler)=>messages.set(type,handler),removeEventListener:type=>messages.delete(type)};
  const ui=installLittleArcHeaderFrame({api:f.api,document,window:w});cleanups.push(()=>ui.dispose());messages.get('message')({source:w.parent,data:{kind:'littleArcHeaderBootstrap',challenge:NONCE}});await frame.onMessage.emit({kind:'context',context:value});
  return {...f,frame,handlers,click:id=>handlers.get(`${id}:click`)({isTrusted:true})};
@@ -373,3 +373,73 @@ it('caret focuses search without scrolling the still-short iframe or granting pl
  for(let i=0;i<3;i++){f.click('space-menu-toggle');expect(focus).toHaveBeenLastCalledWith({preventScroll:true});expect(document.activeElement).toBe(search);expect(document.getElementById('space-picker').hidden).toBe(false);f.click('space-menu-toggle');}
  expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
 });
+it('settings refreshes its expired view, and only explicit refresh permits a later successful open',async()=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());const fresh={...context(),viewId:'22222222-2222-4222-8222-222222222222'};
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:fresh}:{success:true,reviewReady:true});
+ await frame.onMessage.emit({kind:'sizeSettings'});await frame.onMessage.emit({kind:'sizeSettings'});
+ let settings=f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings');expect(settings).toHaveLength(1);expect(settings[0][1]).toMatchObject({viewId:fresh.viewId,source:{tabId:3,windowId:20,url:'https://page.test/'}});
+ await frame.onMessage.emit({kind:'refresh'});await frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
+});
+it('uncertain settings dispatch remains blocked after manual refresh',async()=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='settings')throw Error('lost reply');return {success:true,context:context()};});
+ await frame.onMessage.emit({kind:'sizeSettings'});await frame.onMessage.emit({kind:'refresh'});await frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);
+});
+for(const cause of ['failed','malformed','navigation','revision','duplicate'])it(`settings fresh inspect fences ${cause}`,async()=>{
+ const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);let finish;
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?new Promise(resolve=>finish=resolve):{success:true,reviewReady:true});
+ const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
+ if(cause==='navigation'){f.source.url='https://changed.test/';await f.api.tabs.onUpdated.emit(3,{url:f.source.url});}
+ if(cause==='revision')void frame.onMessage.emit({kind:'cancelDirect'});
+ if(cause==='duplicate')await frame.onMessage.emit({kind:'sizeSettings'});
+ finish(cause==='failed'?{success:false}: {success:true,context:cause==='malformed'?{...context(),viewId:'bad'}:context()});await work;
+ expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(cause==='duplicate'?1:0);
+});
+it('settings context preserves explicit root selection and placement lock while pending',async()=>{
+ const value=context();value.windows.push({id:11,title:'Other'});value.spaces.push({id:'b',bookmarkFolderId:'fb',name:'Work'});const f=await compactFixture(value);
+ document.getElementById('window').value='11';f.handlers.get('window:change')({isTrusted:true});document.getElementById('space').value='b';f.handlers.get('space:change')({isTrusted:true});
+ await f.frame.onMessage.emit({kind:'placementLocked'});await f.frame.onMessage.emit({kind:'settingsContext',context:value});
+ expect(document.getElementById('window').value).toBe('11');expect(document.getElementById('space').value).toBe('b');expect(document.getElementById('review').disabled).toBe(true);expect(document.getElementById('refresh').disabled).toBe(true);
+ await f.frame.onMessage.emit({kind:'reviewReady'});expect(document.getElementById('review').disabled).toBe(true);
+});
+async function recoveryFixture(){
+ const f=fixture();cleanups.push(f.dispose);const missing={...context(),directEnabled:false,controlsMissing:true};
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:missing}:{success:true,reviewReady:true});
+ const top=f.top();top.sender.documentId='source-document';await f.api.runtime.onConnect.emit(top);await top.onMessage.emit({kind:'hello'});const frame=await f.bind(top);
+ const challenge=top.postMessage.mock.calls.find(([m])=>m.kind==='mount')[0].challenge;f.api.tabs.sendMessage.mockResolvedValue({challenge,url:f.source.url,safe:true});
+ const authority=(r,stage,patch={})=>new Promise(resolve=>f.api.runtime.onMessageExternal.emit({type:'littleArcControlsRecoveryAuthority',stage,source:r.source,viewId:r.viewId,connection:r.connection,requestId:r.requestId,...patch},{id:PEER,url:`chrome-extension://${PEER}/background.js`},resolve));
+ return {...f,top,frame,missing,authority};
+}
+it('missing controller remains readonly until explicit settings recovers once with two one-use document proofs',async()=>{
+ const f=await recoveryFixture();await f.frame.onMessage.emit({kind:'refresh'});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='recoverControls')).toBe(false);
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};expect(r.action).toBe('recoverControls');expect(await f.authority(r,'commit')).toEqual({authorized:false});expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'prepare')).toEqual({authorized:false});expect(await f.authority(r,'commit')).toEqual({authorized:true});return {success:true,reviewReady:true};});
+ await f.frame.onMessage.emit({kind:'sizeSettings'});await f.frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='recoverControls')).toHaveLength(1);expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='settings')).toBe(false);expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(3,{type:'littleArcHeaderLiveProbe'},{frameId:0,documentId:'source-document'});
+});
+for(const cause of ['lostReply','missingProof','navigation','wrongPayload','changedPair'])it(`recovery ${cause} never replays after refresh`,async()=>{
+ const f=await recoveryFixture();f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};
+ if(cause==='missingProof')return {success:true,reviewReady:true};
+ if(cause==='navigation'){await f.api.tabs.onUpdated.emit(3,{status:'loading'});expect(await f.authority(r,'prepare')).toEqual({authorized:false});}
+ else if(cause==='wrongPayload')expect(await f.authority(r,'prepare',{viewId:'22222222-2222-4222-8222-222222222222'})).toEqual({authorized:false});
+ else if(cause==='changedPair'){f.storage.arcifyBridgePairingGeneration='changed';expect(await f.authority(r,'prepare')).toEqual({authorized:false});}
+ else {expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'commit')).toEqual({authorized:true});}
+ throw Error('uncertain recovery');});
+ await f.frame.onMessage.emit({kind:'sizeSettings'});await f.frame.onMessage.emit({kind:'refresh'});await f.frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='recoverControls')).toHaveLength(1);expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='settings'||r.action==='directPlace'||r.action==='review')).toBe(false);
+});
+it('missing controller context disables placement and review while leaving deliberate settings usable',async()=>{const f=await compactFixture({...context(),directEnabled:false,controlsMissing:true});expect(document.getElementById('review').disabled).toBe(true);expect(document.getElementById('controls').disabled).toBe(true);expect(document.getElementById('size-settings').disabled).toBe(false);f.click('size-settings');expect(f.frame.postMessage).toHaveBeenCalledWith({kind:'sizeSettings'});});
+it('invalid missing-controller metadata cannot enable placement',()=>{for(const controlsMissing of [false,'true'])expect(()=>validateHeaderContext({...context(),directEnabled:false,controlsMissing})).toThrow();expect(()=>validateHeaderContext({...context(),directEnabled:true,controlsMissing:true})).toThrow();});
+it.each(['beforeReply','afterReply'])('source return %s refreshes only choices and permits a new settings intent',async ordering=>{
+ const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());let finish;
+ // Start with an ordinary view so this operation is settings, not recovery.
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:context()}:new Promise(resolve=>finish=resolve));
+ const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
+ if(ordering==='beforeReply')await f.api.tabs.onActivated.emit({tabId:3,windowId:20});
+ finish({success:true,reviewReady:true});await work;
+ if(ordering==='afterReply')await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();
+ expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);
+ const again=frame.onMessage.emit({kind:'sizeSettings'});await flush();finish({success:true,reviewReady:true});await again;expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
+});
+it('source focus after uncertain settings never clears dispatch lock or retries',async()=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:context()};throw Error('lost');});await frame.onMessage.emit({kind:'sizeSettings'});const calls=f.api.runtime.sendMessage.mock.calls.length;await f.api.windows.onFocusChanged.emit(20);await flush();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(calls);expect(f.broker.sessions.get(3).settingsDispatched).toBe(true);});
+it.each(['navigation','move'])('source %s during return inspect cannot restore stale controls',async cause=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());await frame.onMessage.emit({kind:'sizeSettings'});const before=frame.postMessage.mock.calls.filter(([m])=>m.kind==='context').length;let finish;f.api.runtime.sendMessage.mockImplementation(()=>new Promise(resolve=>finish=resolve));await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();expect(finish).toBeTypeOf('function');if(cause==='navigation')await f.api.tabs.onUpdated.emit(3,{status:'loading'});else await f.api.tabs.onDetached.emit(3);finish({success:true,context:context()});await flush();expect(frame.postMessage.mock.calls.filter(([m])=>m.kind==='context')).toHaveLength(before);expect(frame.disconnect).toHaveBeenCalled();});
+async function closureFixture(){const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);const challenge=top.postMessage.mock.calls.find(([m])=>m.kind==='mount')[0].challenge;f.api.tabs.sendMessage.mockResolvedValue({challenge,url:f.source.url,safe:true});await frame.onMessage.emit({kind:'sizeSettings'});const notify=(patch={},sender={id:PEER,url:`chrome-extension://${PEER}/background.js`})=>new Promise(resolve=>f.api.runtime.onMessageExternal.emit({type:'littleArcControlsClosed',version:1,generation:'g',source:{tabId:3,windowId:20,url:f.source.url},...patch},sender,resolve));return {...f,top,frame,notify};}
+it.each(['afterFailure','duringFailure'])('closure proof %s refreshes choices without replaying settings',async ordering=>{const f=await closureFixture();let finish,count=0;f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{expect(r.action).toBe('inspect');if(++count===1)return new Promise(resolve=>finish=resolve);return {success:true,context:{...context(),directEnabled:false,controlsMissing:true}};});await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();if(ordering==='duringFailure')expect(await f.notify()).toEqual({accepted:true});finish({success:false});await flush();if(ordering==='afterFailure')expect(await f.notify()).toEqual({accepted:true});await flush();expect(f.frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({kind:'context',context:expect.objectContaining({controlsMissing:true})}));expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);});
+it.each(['generation','peer','source','version','extra'])('closure notification rejects %s without reads',async cause=>{const f=await closureFixture(),patch={},sender={id:PEER};if(cause==='generation')patch.generation='wrong';if(cause==='peer')sender.id=SELF;if(cause==='source')patch.source={tabId:3,windowId:99,url:f.source.url};if(cause==='version')patch.version=2;if(cause==='extra')patch.extra=true;const before=f.api.runtime.sendMessage.mock.calls.length;expect(await f.notify(patch,sender)).toEqual({accepted:false});expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(before);});
+it('closure proof cannot unlock uncertain settings dispatch',async()=>{const f=await closureFixture();const s=f.broker.sessions.get(3);s.settingsDispatched=true;const before=f.api.runtime.sendMessage.mock.calls.length;await f.notify();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(before);expect(s.settingsDispatched).toBe(true);});

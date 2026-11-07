@@ -15,7 +15,7 @@ export function installLittleArcHeaderFrame({api=chrome,document=globalThis.docu
  };
  media?.addEventListener?.('change',paintTheme);paintTheme();
  const selected=()=>{const s=context?.spaces.find(v=>v.id===space.value),w=context?.windows.find(v=>String(v.id)===destinationWindow.value);return s&&w?{windowId:w.id,spaceId:s.id,bookmarkFolderId:s.bookmarkFolderId}:null;};
- const controls=()=>{for(const id of ['space','window','review','controls','refresh','size-settings'].filter(id=>byId(id)))byId(id).disabled=closed||pending||!context;byId('review').disabled ||= reviewUsed||locked||!selected();byId('controls').disabled ||= reviewUsed;if(byId('size-settings'))byId('size-settings').disabled ||= reviewUsed;byId('refresh').disabled=closed||pending||!port;if(toggle)toggle.disabled=closed||pending||!context;};
+ const controls=()=>{for(const id of ['space','window','review','controls','refresh','size-settings'].filter(id=>byId(id)))byId(id).disabled=closed||pending||!context;byId('review').disabled ||= reviewUsed||locked||context?.controlsMissing||!selected();byId('controls').disabled ||= reviewUsed||context?.controlsMissing;if(byId('size-settings'))byId('size-settings').disabled ||= reviewUsed;byId('refresh').disabled=closed||pending||!port;if(toggle)toggle.disabled=closed||pending||!context;};
  const send=message=>{if(!closed&&port)try{port.postMessage(message);}catch{closed=true;showError('Connection lost. Use the trusted control tab.');controls();}};
  // Measure natural content, never iframe/viewport height: avoid resize feedback.
  const measure=()=>{const height=Math.max(28,Math.min(480,Math.ceil(byId('header').getBoundingClientRect().height)));if(!Number.isFinite(height))return;lastHeight=height;send({kind:'resize',collapsed:byId('expanded').hidden,advanced:advancedOpen,height});
@@ -60,6 +60,7 @@ export function installLittleArcHeaderFrame({api=chrome,document=globalThis.docu
   port.onMessage.addListener(message=>{
    try{
     if(message?.kind==='context')render(message.context);
+    else if(message?.kind==='settingsContext'){render(message.context);pending=true;status.hidden=false;status.textContent='Opening trusted Little Arc settings. Nothing has moved.';controls();presentation();}
     else if(message?.kind==='systemScheme'&&Object.keys(message).length===2&&['light','dark'].includes(message.mode)){systemMode=message.mode;paintTheme();}
     else if(message?.kind==='dismissPicker'&&Object.keys(message).length===1)dismissFromPage();
     else if(message?.kind==='placementLocked'){locked=true;pending=false;showError('A placement was dispatched or its outcome is uncertain. Check trusted controls; do not repeat the transfer.');controls();}
@@ -71,7 +72,7 @@ export function installLittleArcHeaderFrame({api=chrome,document=globalThis.docu
  };
  window.addEventListener('message',bootstrap);
  byId('choices').addEventListener('submit',event=>{event.preventDefault();if(!safeGesture(event)||pending||closed||reviewUsed||locked)return;const target=selected();if(!target)return;if(context?.directEnabled){pending=true;controls();status.hidden=false;status.textContent='Checking this destination and placing this page. Do not repeat an uncertain transfer.';presentation();send({kind:'placeDirect',target});return;}review(target);});
- byId('size-settings')?.addEventListener('click',event=>{if(!event.isTrusted||pending||closed||!context||reviewUsed)return;pending=true;controls();status.hidden=false;status.textContent='Opening trusted window size settings. Nothing has moved.';presentation();send({kind:'sizeSettings'});});
+ byId('size-settings')?.addEventListener('click',event=>{if(!event.isTrusted||pending||closed||!context||reviewUsed)return;pending=true;controls();status.hidden=false;status.textContent='Opening trusted Little Arc settings. Nothing has moved.';presentation();send({kind:'sizeSettings'});});
  byId('controls').addEventListener('click',event=>{if(event.isTrusted)review(null);});
  byId('refresh').addEventListener('click',event=>{if(event.isTrusted&&!pending){pending=true;controls();send({kind:'refresh'});}});
  byId('dismiss').addEventListener('click',event=>{if(event.isTrusted){send({kind:'cancelDirect'});closePicker();byId('expanded').hidden=true;byId('reopen').hidden=false;presentation();byId('reopen').focus();}});
