@@ -66,12 +66,12 @@ export class SharedSpotlightLogic {
         // URL input and empty-query defaults retain their established ordering.
         if (query.trim() && instantSuggestion?.type === ResultType.SEARCH_QUERY) {
             const matchedActions = combined.filter(isActionResult)
-                // Folder names/path ancestry are incidental matches for bare queries.
-                // Preserve established Space/sidebar command precedence unless
-                // the user explicitly asks to open/browse/manage a folder.
+                // Folder-name discovery must not displace an already matched command:
+                // 'open Arcify' still opens the sidebar, not its bookmark root.
+                // 'open Areas' remains folder-first when no command matches.
                 .sort((a, b) => {
-                    const incidentalFolder = result => result.type === 'bookmark-folder-action' && result.metadata?.explicitFolderIntent !== true ? 1 : 0;
-                    return incidentalFolder(a) - incidentalFolder(b) || actionMatchScore(b) - actionMatchScore(a);
+                    const folderCandidate = result => result.type === 'bookmark-folder-action' ? 1 : 0;
+                    return folderCandidate(a) - folderCandidate(b) || actionMatchScore(b) - actionMatchScore(a);
                 });
             return [...matchedActions, ...combined.filter(result => !isActionResult(result))];
         }

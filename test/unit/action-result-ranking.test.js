@@ -96,11 +96,41 @@ describe('folder discovery coexistence with established commands', () => {
     it('retains explicit partial folder requests and bare nested-folder discovery', () => {
         for (const query of ['open Areas','op Area','browse Areas','manage Areas','folder Areas']) {
             const actions=folderResults(folders,query);
-            expect(actions[0].metadata.explicitFolderIntent).toBe(true);
-            const results=SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[workspace],{actions,query});
+            expect(actions[0].metadata.folder.title).toBe('Areas');
+            const results=SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[],{actions,query});
             expect(results[0].type).toBe('bookmark-folder-action');
         }
         const query='Areas',actions=folderResults(folders,query);
         expect(SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[],{actions,query})[0]).toBe(actions[0]);
+    });
+});
+
+
+describe('generic open/show prefixes do not override matched sidebar commands', () => {
+    const folders = [
+        {id:'1',title:'Bookmarks',path:'Bookmarks'},
+        {id:'2',title:'Arcify',path:'Bookmarks / Arcify'},
+        {id:'3',title:'Pair Work',path:'Bookmarks / Arcify / Pair Work'},
+        {id:'4',title:'Areas',path:'Bookmarks / Arcify / Pair Work / Areas'},
+        {id:'5',title:'Sidebar',path:'Bookmarks / Sidebar'},
+        {id:'6',title:'Side Panel',path:'Bookmarks / Side Panel'}
+    ];
+    it.each(['open arcify','OPEN ARCIFY','op arcify','ope arcify','show arcify','open sidebar','show sidebar','open side panel','opn arcfi'])('retains sidebar selection with complete folder tree: %s',query=>{
+        const command={...sidebar,metadata:{...sidebar.metadata,matchScore:matchSidebarQuery(query)}};
+        expect(command.metadata.matchScore).toBeGreaterThan(0);
+        const actions=folderResults(folders,query);
+        const reference={type:'bookmark',title:'Open Arcify sidebar reference',url:'https://example.test/reference',metadata:{}};
+        const results=SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[reference],{actions:[...actions,command],query});
+        expect(results[0]).toBe(command);
+        expect(results).toContain(reference);
+        for(const action of actions)expect(results).toContain(action);
+    });
+    it('allows explicit browse Arcify and nested open Areas with no matching sidebar command',()=>{
+        for(const query of ['browse Arcify','manage Arcify','folder Arcify','open Areas','op Area']) {
+            expect(matchSidebarQuery(query)).toBeNull();
+            const actions=folderResults(folders,query);
+            const results=SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[],{actions,query});
+            expect(results[0]).toBe(actions[0]);
+        }
     });
 });

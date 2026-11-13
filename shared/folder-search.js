@@ -15,12 +15,11 @@ export function flattenFolders(tree) {
     return folders;
 }
 export function folderResults(folders, query) {
-    const explicitFolderIntent = /^(?:(?:open|browse|show|manage|op|ope)\s+|folder\s+)/i.test(query.trim());
     const text = query.trim().replace(/^(?:open|browse|show|manage|op|ope)\s+/i, '').replace(/^folder\s+/i, '').trim();
     if (text.length < 2 || text.length > 160) return [];
     return FuseSearchService.search(folders, text, { keys: [{ name: 'title', weight: 3 }, { name: 'path', weight: 1 }] }).slice(0, 8)
         .map(({ item, matchScore }) => ({ type: FOLDER_RESULT_TYPE, title: `Browse ${item.title}`, url: '', domain: '',
-            metadata: { folder: item, matchScore, explicitFolderIntent } }));
+            metadata: { folder: item, matchScore } }));
 }
 
 /** Local-only bookmark reads and explicit navigation. Never bulk-open or mutate a folder. */
