@@ -1,3 +1,5 @@
+import { installArcifyFolderMessages } from './shared/arcify-folder-actions.js';
+import { installFolderMessages } from './shared/folder-search.js';
 import { createHelperSourceCapture, installHelperSourceValidation } from './shared/helper-source.js';
 import { createRoutedSourceCapture, installRoutedSourceValidation } from './shared/routed-open-source.js';
 import { installPeekBroker } from './shared/peek-broker.js';
@@ -25,7 +27,7 @@ import { arcifyBridge } from './shared/arcify-bridge.js';
 import { installArcifySplitActionMessages } from './shared/arcify-split-actions.js';
 import { installArcifyArchiveMessages } from './shared/arcify-archive-actions.js';
 import { installArcifyTabActionMessages } from './shared/arcify-tab-actions.js';
-import { installArcifySpaceActionMessages } from './shared/arcify-space-actions.js';
+import { installArcifySpaceActionMessages, resolveSpaceActionSource } from './shared/arcify-space-actions.js';
 import { BRIDGE_TYPE, isExtensionId, isWindowId, trustedSender, validateRequest, responseFor } from './shared/arcify-bridge-protocol.js';
 import { ArcifyBridgeProvider } from './shared/data-providers/arcify-bridge-provider.js';
 import { handleBridgeResult } from './shared/arcify-bridge-actions.js';
@@ -45,6 +47,7 @@ const captureHelperSource = createHelperSourceCapture(chrome);
 installHelperSourceValidation(chrome, arcifyBridge, captureHelperSource);
 installRoutedSourceValidation(chrome, arcifyBridge, captureRoutedSource);
 installOverlayRecoveryValidation(chrome);
+installArcifyFolderMessages(chrome, arcifyBridge, { verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false) });
 installArcifySpaceActionMessages(chrome, arcifyBridge, {
     verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
 });
@@ -824,3 +827,27 @@ chrome.runtime.onInstalled.addListener((details) => {
         chrome.tabs.create({ url: 'installation-onboarding.html' });
     }
 });
+
+installFolderMessages(chrome, { resolveSource: async (message, sender) => {
+    const source = await resolveSpaceActionSource(chrome, message, sender, { verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false) });
+    const window = await chrome.windows.get(source.windowId);
+    if (window.incognito) throw new Error('Folder browsing is unavailable in private windows.');
+    return source;
+}, openBookmark: async (bookmark, message, sender) => {
+    const peerId = await arcifyBridge.getPeerId();
+    if (!peerId) return false;
+    const source = await resolveSpaceActionSource(chrome, message, sender, {
+        verifyHelper: tab => activeNewTabReuse.reuseOrFallback(tab, async () => false)
+    });
+    const snapshot = await arcifyBridge.snapshot(source.windowId, peerId);
+    const [current] = await chrome.bookmarks.get(bookmark.id);
+    if (!current || current.parentId !== bookmark.parentId || current.url !== bookmark.url || current.title !== bookmark.title) throw new Error('This bookmark changed. Browse the folder again.');
+    const owned = snapshot.bookmarks.find(item => item.id === bookmark.id);
+    // Paired saved bookmarks retain their exact Space/pin identity. Ordinary
+    // bookmarks use Arcify's normal new-tab route, never native fallback on error.
+    const result = { type: 'bookmark', title: bookmark.title, url: bookmark.url,
+        metadata: owned ? { arcifyBridge: { kind: 'bookmark', peerId, windowId: source.windowId,
+            spaceId: owned.spaceId, bookmarkId: owned.id } } : {} };
+    await handleBridgeResult(arcifyBridge, chrome, result, 'new-tab', source);
+    return true;
+} });

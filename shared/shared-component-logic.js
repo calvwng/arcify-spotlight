@@ -21,7 +21,7 @@ import { isTabActionResult } from './arcify-tab-actions-protocol.js';
 import { isSpaceActionResult } from './arcify-space-actions-protocol.js';
 import { resultIdentity } from './selection-manager.js';
 
-export const isActionResult = result => result?.type === 'spotlight-settings-action' || isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
+export const isActionResult = result => result?.type === 'bookmark-folder-action' || result?.type === 'spotlight-settings-action' || isTransientActionResult(result) || isSplitActionResult(result) || isArchiveResult(result) || isTabActionResult(result) || isSpaceActionResult(result) || result?.type === 'arcify-sidebar-command' ||
     (result?.type === 'arcify-space' && result.metadata?.arcifyBridge?.kind === 'space');
 
 const actionMatchScore = result => Number.isFinite(result.metadata?.matchScore)
@@ -66,7 +66,13 @@ export class SharedSpotlightLogic {
         // URL input and empty-query defaults retain their established ordering.
         if (query.trim() && instantSuggestion?.type === ResultType.SEARCH_QUERY) {
             const matchedActions = combined.filter(isActionResult)
-                .sort((a, b) => actionMatchScore(b) - actionMatchScore(a));
+                // Folder-name discovery must not displace an already matched command:
+                // 'open Arcify' still opens the sidebar, not its bookmark root.
+                // 'open Areas' remains folder-first when no command matches.
+                .sort((a, b) => {
+                    const folderCandidate = result => result.type === 'bookmark-folder-action' ? 1 : 0;
+                    return folderCandidate(a) - folderCandidate(b) || actionMatchScore(b) - actionMatchScore(a);
+                });
             return [...matchedActions, ...combined.filter(result => !isActionResult(result))];
         }
         if (preferredAction && combined.includes(preferredAction) && isActionResult(preferredAction)) {
