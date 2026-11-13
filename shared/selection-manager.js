@@ -11,6 +11,7 @@ export function resultIdentity(result) {
     if (result.type === 'arcify-tab-action') return JSON.stringify([result.type, metadata.tabAction]);
     if (result.type === 'arcify-space-action') return JSON.stringify([result.type, metadata.spaceAction]);
     if (result.type === 'arcify-sidebar-command') return JSON.stringify([result.type, metadata.sidebarPeerId]);
+    if (result.type === 'bookmark-folder-action') return JSON.stringify([result.type, metadata.folder?.id]);
     const owner = metadata.arcifyBridge;
     if (owner) return JSON.stringify(['arcify', owner.peerId, owner.windowId, owner.kind,
         ...(owner.kind === 'remoteToday' ? [owner.tabId, owner.ownerWindowId, owner.spaceId, owner.bookmarkFolderId] : owner.kind === 'tab' ? [owner.tabId] : owner.kind === 'favorite' ? [owner.favoriteId] : [owner.spaceId, owner.bookmarkId])]);
