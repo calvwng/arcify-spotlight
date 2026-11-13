@@ -1,3 +1,4 @@
+import { folderResults } from '../../shared/folder-search.js';
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { matchSidebarQuery } from '../../shared/arcify-sidebar-command.js';
@@ -70,5 +71,36 @@ describe('sidebar action icon', () => {
             const contrast = (Math.max(stroke, background) + 0.05) / (Math.min(stroke, background) + 0.05);
             expect(contrast).toBeGreaterThan(3.5);
         }
+    });
+});
+
+
+describe('folder discovery coexistence with established commands', () => {
+    const folders = [{id:'100',title:'Pair Work',path:'Bookmarks / Arcify / Pair Work'}, {id:'101',title:'Areas',path:'Bookmarks / Arcify / Pair Work / Areas'}, {id:'102',title:'Arcify',path:'Bookmarks / Arcify'}];
+    it('keeps fuzzy Space navigation first for pair wrok even when folder scores higher', () => {
+        const query = 'pair wrok';
+        const actions = folderResults(folders, query);
+        expect(actions.length).toBeGreaterThan(0);
+        const space = {...workspace,title:'Pair Work',metadata:{...workspace.metadata,matchScore:0.1}};
+        const results = SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query), [space], {actions,query});
+        expect(results[0]).toBe(space);
+        expect(results).toContain(actions[0]);
+    });
+    it('does not let incidental Arcify folder matches displace the sidebar command', () => {
+        const query = 'opn arcfi';
+        const actions = folderResults(folders, query);
+        const command = {...sidebar,metadata:{...sidebar.metadata,matchScore:matchSidebarQuery(query)}};
+        const results = SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query), [], {actions:[...actions,command],query});
+        expect(results[0]).toBe(command);
+    });
+    it('retains explicit partial folder requests and bare nested-folder discovery', () => {
+        for (const query of ['open Areas','op Area','browse Areas','manage Areas','folder Areas']) {
+            const actions=folderResults(folders,query);
+            expect(actions[0].metadata.explicitFolderIntent).toBe(true);
+            const results=SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[workspace],{actions,query});
+            expect(results[0].type).toBe('bookmark-folder-action');
+        }
+        const query='Areas',actions=folderResults(folders,query);
+        expect(SharedSpotlightLogic.combineResults(SpotlightUtils.generateInstantSuggestion(query),[],{actions,query})[0]).toBe(actions[0]);
     });
 });
