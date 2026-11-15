@@ -1,3 +1,4 @@
+import { FolderActionController } from './shared/folder-actions-ui.js';
 import { TransientActionController, isTransientActionResult } from './shared/arcify-transient-actions-ui.js';
 import { ArchiveDefaultRefresh } from './shared/archive-default-refresh.js';
 /**
@@ -304,6 +305,7 @@ export async function initializeSpotlight() {
     const archiveDefaultRefresh = new ArchiveDefaultRefresh();
     let startupSuggestion;
     let sidebarCommand;
+    let folderActions;
     let spaceActions;
     let tabActions;
     let archiveActions;
@@ -358,6 +360,7 @@ export async function initializeSpotlight() {
         isReady: () => initialResultsReady && !disposed,
         select: () => { manuallySelected = false; updateDisplay(); },
         clearSelection: () => { manuallySelected = false; selectionManager.selectedIndex = -1; selectionManager.updateVisualSelection(); } });
+    folderActions = new FolderActionController({ newTab: true, parent: resultsContainer.parentElement, input, onChange: () => updateDisplay(), showError: bridgeStatus.showError });
     spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, newTab: true, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
@@ -381,7 +384,7 @@ export async function initializeSpotlight() {
         disposed = true;
         searchQueryId++;
         startupSuggestion.dispose();
-        sidebarCommand.dispose();
+        folderActions.dispose(); sidebarCommand.dispose();
         spaceActions.dispose();
         tabActions.dispose();
         archiveActions.dispose();
@@ -479,7 +482,7 @@ export async function initializeSpotlight() {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery,
+            actions: [...(folderActions?.results(typedQuery) || []), ...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery,
             preferredAction: startupSuggestion?.selected ? command : null
         });
     }
@@ -551,6 +554,7 @@ export async function initializeSpotlight() {
     async function handleResultAction(result, event) {
         if (actionPending || bridgeStatus.settingsActions.pending || spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
         if (bridgeStatus.settingsActions.invoke(result, event)) return;
+        if (folderActions.invoke(result, event)) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;

@@ -1,3 +1,4 @@
+import { FolderActionController } from './shared/folder-actions-ui.js';
 import { isRoutedUrlSubmission } from './shared/routed-open-source.js';
 import { trustedActionGesture } from './shared/arcify-space-actions-ui.js';
 import { installPeekContent } from './shared/peek-content.js';
@@ -346,6 +347,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     const bridgeStatus = mountBridgeStatus(resultsContainer.parentElement, { input });
     let actionPending = false;
     let sidebarCommand;
+    let folderActions;
     let spaceActions;
     let tabActions;
     let archiveActions;
@@ -399,6 +401,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         selectionInvalidated = false;
     });
     sidebarCommand = new SidebarCommandController({ showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
+    folderActions = new FolderActionController({ parent: resultsContainer.parentElement, input, onChange: () => updateDisplay(), showError: bridgeStatus.showError });
     spaceActions = new SpaceActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     tabActions = new TabActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
     archiveActions = new ArchiveActionController({ parent: resultsContainer.parentElement, input, showError: bridgeStatus.showError, showSuccess: bridgeStatus.showSuccess, onChange: () => updateDisplay() });
@@ -526,7 +529,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
     function combineResults() {
         const command = sidebarCommand?.result(typedQuery);
         return SharedSpotlightLogic.combineResults(instantSuggestion, asyncSuggestions, {
-            actions: [...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery
+            actions: [...(folderActions?.results(typedQuery) || []), ...(command ? [command] : []), ...(spaceActions?.results(typedQuery) || []), ...bridgeStatus.settingsActions.results(typedQuery), ...(tabActions?.results(typedQuery) || []), ...(archiveActions?.results(typedQuery) || []), ...(splitActions?.results(typedQuery) || []), ...(transientActions?.results(typedQuery) || [])], query: typedQuery
         });
     }
 
@@ -601,6 +604,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         if (isRoutedUrlSubmission(result, spotlightTabMode) && !trustedActionGesture(event)) return;
         if (actionPending || bridgeStatus.settingsActions.pending || spaceActions.pending || tabActions.pending || archiveActions.pending || splitActions.pending || transientActions.pending) return;
         if (bridgeStatus.settingsActions.invoke(result, event)) return;
+        if (folderActions.invoke(result, event)) return;
         if (sidebarCommand.invoke(result, event)) return;
         if (spaceActions.invoke(result, event)) return;
         if (tabActions.invoke(result, event)) return;
@@ -669,7 +673,7 @@ async function activateSpotlightNow(spotlightTabMode, options) {
         // Invalidated extension APIs may throw during cleanup. Still retire all
         // DOM/timer ownership; never notify a new worker about the old surface.
         for (const cleanup of [removeGlobalCloseListener, removeFocusContainment,
-            () => surface.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(), () => archiveActions.dispose(), () => splitActions.dispose(), () => transientActions.dispose(),
+            () => surface.dispose(), () => folderActions.dispose(), () => sidebarCommand.dispose(), () => spaceActions.dispose(), () => tabActions.dispose(), () => archiveActions.dispose(), () => splitActions.dispose(), () => transientActions.dispose(),
             () => liveResults.dispose(), () => bridgeStatus.dispose(), () => dialog.close()]) {
             try { cleanup(); } catch (error) { Logger.log('Overlay cleanup after invalidation:', error); }
         }

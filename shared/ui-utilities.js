@@ -145,8 +145,8 @@ export class SpotlightUtils {
 
     // Get favicon URL with fallback (consolidated from overlay.js and popup.js)
     static getFaviconUrl(result) {
-        if (['spotlight-settings-action', 'arcify-space-action', 'arcify-tab-action', 'arcify-archive-action', 'arcify-split-action', 'arcify-transient-action'].includes(result.type)) {
-            const icon = result.type === 'spotlight-settings-action' ? 'settings' : result.type === 'arcify-transient-action' ? 'window' : result.type === 'arcify-split-action' ? 'split' : result.type === 'arcify-archive-action' ? 'archive' : result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
+        if (['bookmark-folder-action', 'spotlight-settings-action', 'arcify-space-action', 'arcify-tab-action', 'arcify-archive-action', 'arcify-split-action', 'arcify-transient-action'].includes(result.type)) {
+            const icon = result.type === 'bookmark-folder-action' ? 'folder' : result.type === 'spotlight-settings-action' ? 'settings' : result.type === 'arcify-transient-action' ? 'window' : result.type === 'arcify-split-action' ? 'split' : result.type === 'arcify-archive-action' ? 'archive' : result.type === 'arcify-tab-action' ? tabActionDefinition(result.metadata?.tabAction?.command, result.metadata?.tabAction?.scope?.context)?.icon : ACTION_DEFINITIONS[result.metadata?.spaceAction?.command]?.icon;
             const paths = {
                 window: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M6 7h1m2 0h1"/>',
                 split: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>',
@@ -204,6 +204,7 @@ export class SpotlightUtils {
 
     // Format result for display (moved from SearchEngine and duplicated code)
     static formatResult(result, mode, activeGroupName = null) {
+        if (result.type === 'bookmark-folder-action') return { title: result.title, subtitle: result.metadata.folder.path, action: 'Browse folder', icon: 'folder' };
         if (result.type === 'spotlight-settings-action') return SETTINGS_DEFINITION;
         if (result.type === 'arcify-transient-action') return { ...TRANSIENT_ACTION_DEFINITION, subtitle: `${TRANSIENT_ACTION_DEFINITION.subtitle} • ${result.metadata?.transientAction?.url || ''}` };
         if (result.type === 'arcify-split-action') return SPLIT_ACTION_DEFINITIONS[result.metadata?.splitAction?.command] || { title: 'Unavailable Split action', subtitle: '', action: '' };
