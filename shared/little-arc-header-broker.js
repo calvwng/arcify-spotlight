@@ -1,6 +1,7 @@
 import {createLittleArcDispatchLedger} from './little-arc-dispatch-ledger.js';
 import { PEER_KEY,PAIRING_GENERATION_KEY,isTransientUrl,isExtensionId } from './arcify-bridge-protocol.js';
-import { HEADER_TYPE,HEADER_TOP_PORT,HEADER_FRAME_PORT,HEADER_PAGE,exact,positive,uuid,validateHeaderContext,validHitRegions } from './little-arc-header-protocol.js';
+import { HEADER_TYPE,HEADER_ICON_INSPECT,HEADER_TOP_PORT,HEADER_FRAME_PORT,HEADER_PAGE,exact,positive,uuid,validateHeaderContext,validHitRegions } from './little-arc-header-protocol.js';
+const ICON_INSPECT_UNSUPPORTED=Symbol('icon inspect unsupported');
 const error=()=>new Error('Little Arc header changed or is unavailable. Use the trusted control tab; nothing was retried.');
 export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
  const DIRECT_AUTHORITY='littleArcDirectAuthorityV1',RECOVERY_AUTHORITY='littleArcControlsRecoveryAuthority';
@@ -27,15 +28,29 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
   try{
    const response=await Promise.race([api.runtime.sendMessage(current.peerId,{type:HEADER_TYPE,action,source:s.source,...fields}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(error()),deadlineMs);})]);
    if(action==='directPlace'&&response?.success===true&&response.phase==='committed'&&response.tabId===s.source.tabId&&response.windowId===s.target?.windowId&&response.spaceId===s.target?.spaceId)await ledger.retire(s.source.tabId,s.operation);
-   const after=await pairing();if(!s.alive||after.peerId!==current.peerId||after.generation!==current.generation||response?.success!==true)throw error();
+   const after=await pairing();if(!s.alive||after.peerId!==current.peerId||after.generation!==current.generation)throw error();
+   if(action===HEADER_ICON_INSPECT&&exact(response,['success','code','error'])&&response.success===false&&response.code==='INVALID_REQUEST'&&response.error==='Invalid header request.')return ICON_INSPECT_UNSUPPORTED;
+   if(response?.success!==true)throw error();
    if(action==='directPrepare'){if(!exact(response,['success','authorization','expiresInMs'])||!uuid(response.authorization)||response.expiresInMs!==15000)throw error();return response;}
    if(action==='directPlace'){if(response.phase!=='committed'||response.tabId!==s.source.tabId)throw error();return response;}
    if(action==='directRevoke')return response;
-   if(action==='inspect'){if(!exact(response,['success','context']))throw error();return response.context===null?null:validateHeaderContext(response.context);}
+   if(action==='inspect'||action===HEADER_ICON_INSPECT){if(!exact(response,['success','context']))throw error();return response.context===null?null:validateHeaderContext(response.context);}
    if(!exact(response,['success','reviewReady'])||response.reviewReady!==true)throw error();return response;
   }finally{clearTimeout(timer);}
  }
- async function prepare(s){await sourceLive(s);const value=await call(s,'inspect');const context=value?{...value,siteHostname:new URL(s.source.url).hostname}:null;if(!context){post(s.top,{kind:'untracked'});close(s);return;}s.context=context;s.presentation=null;s.preparing=null;s.locked=await ledger.blocked(s.source.tabId);if(!s.locked)s.consumed=false;s.grant=null;return context;}
+ async function inspect(s){
+  if(s.legacyIconInspect)return call(s,'inspect');
+  const deadline=Date.now()+timeoutMs;
+  const context=await call(s,HEADER_ICON_INSPECT);
+  if(context!==ICON_INSPECT_UNSUPPORTED)return context;
+  // Older Arcify rejects the unknown read before it issues a header view.
+  // Never fall back on a timeout, malformed reply, or authorization failure.
+  await sourceLive(s);
+  const remaining=deadline-Date.now();if(remaining<=0)throw error();
+  s.legacyIconInspect=true;
+  return call(s,'inspect',{},null,remaining);
+ }
+ async function prepare(s){await sourceLive(s);const value=await inspect(s);const context=value?{...value,siteHostname:new URL(s.source.url).hostname}:null;if(!context){post(s.top,{kind:'untracked'});close(s);return;}s.context=context;s.presentation=null;s.preparing=null;s.locked=await ledger.blocked(s.source.tabId);if(!s.locked)s.consumed=false;s.grant=null;return context;}
  const refreshReturned=async s=>{
   if(!s.alive||!s.frame||!s.settingsUsed)return;
   if(s.inFlight){s.returnRequested=true;return;}
@@ -93,7 +108,7 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
      try{
       check();if(s.consumed||!valid(s.context)||await ledger.blocked(s.source.tabId))throw error();
       const oldSpace=s.context.spaces.find(v=>v.id===target.spaceId);
-      const fresh=await call(s,'inspect');check();
+      const fresh=await inspect(s);check();
       if(!valid(fresh)||fresh.spaces.find(v=>v.id===target.spaceId).name!==oldSpace.name)throw error();
       s.context=fresh;await directLive(s);check();
       let prepared;s.preparing=structuredClone(target);
@@ -121,7 +136,7 @@ export function installLittleArcHeaderBroker(api=chrome,{timeoutMs=5000}={}){
      s.grant=null;s.consumed=true;s.settingsUsed=true;current();await sourceLive(s,true);current();
      // Views expire independently of the mounted header. Refresh this read-only
      // context once before settings, without resetting placement/dispatch fences.
-     const fresh=await call(s,'inspect');current();if(!fresh)throw error();
+     const fresh=await inspect(s);current();if(!fresh)throw error();
      await sourceLive(s,true);current();
      s.context={...fresh,siteHostname:new URL(source.url).hostname};if(fresh.controlsMissing){s.grant=null;s.preparing=null;s.presentation=null;}
      post(port,{kind:'settingsContext',context:s.context});

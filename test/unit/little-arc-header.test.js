@@ -3,15 +3,16 @@ import {afterEach,beforeEach,it,expect,vi} from 'vitest';
 import {installLittleArcHeaderBroker} from '../../shared/little-arc-header-broker.js';
 import {installLittleArcHeaderContent} from '../../shared/little-arc-header-content.js';
 import {installLittleArcHeaderFrame} from '../../shared/little-arc-header-frame.js';
-import {HEADER_TOP_PORT,HEADER_FRAME_PORT,HEADER_PAGE,validateHeaderContext} from '../../shared/little-arc-header-protocol.js';
+import {HEADER_TOP_PORT,HEADER_FRAME_PORT,HEADER_PAGE,HEADER_ICON_INSPECT,validateHeaderContext} from '../../shared/little-arc-header-protocol.js';
 import {transientUrlFromQuery} from '../../shared/arcify-transient-actions-ui.js';
 const SELF='a'.repeat(32),PEER='b'.repeat(32),NONCE='11111111-1111-4111-8111-111111111111';
 const event=()=>{const listeners=new Set();return {addListener:fn=>listeners.add(fn),removeListener:fn=>listeners.delete(fn),emit:(...args)=>Promise.all([...listeners].map(fn=>fn(...args)))};};
+const isInspect=request=>request.action==='inspect'||request.action===HEADER_ICON_INSPECT;
 const context=()=>({viewId:NONCE,windows:[{id:10,title:'Window 10'}],spaces:[{id:'a',bookmarkFolderId:'fa',name:'Home'}],proposed:{windowId:10,spaceId:'a',bookmarkFolderId:'fa'}});
 function fixture(){
  const source={id:3,windowId:20,url:'https://page.test/',incognito:false,active:true};
  const storage={arcifyBridgePeerId:PEER,arcifyBridgePairingGeneration:'g'},sessionData={};
- const api={runtime:{id:SELF,getURL:p=>`chrome-extension://${SELF}/${p}`,onConnect:event(),onMessage:event(),onMessageExternal:event(),sendMessage:vi.fn(async(_peer,request)=>request.action==='inspect'?{success:true,context:context()}:{success:true,reviewReady:true})},storage:{local:{get:async()=>structuredClone(storage)},session:{get:async()=>structuredClone(sessionData),set:async v=>Object.assign(sessionData,structuredClone(v))},onChanged:event()},
+ const api={runtime:{id:SELF,getURL:p=>`chrome-extension://${SELF}/${p}`,onConnect:event(),onMessage:event(),onMessageExternal:event(),sendMessage:vi.fn(async(_peer,request)=>isInspect(request)?{success:true,context:context()}:{success:true,reviewReady:true})},storage:{local:{get:async()=>structuredClone(storage)},session:{get:async()=>structuredClone(sessionData),set:async v=>Object.assign(sessionData,structuredClone(v))},onChanged:event()},
  tabs:{get:async()=>structuredClone(source),sendMessage:vi.fn(async()=>{}),onUpdated:event(),onActivated:event(),onRemoved:event(),onAttached:event(),onDetached:event(),onReplaced:event()},windows:{get:async()=>({id:20,type:'normal',incognito:false,focused:true}),onFocusChanged:event(),onRemoved:event()}};
  const broker=installLittleArcHeaderBroker(api);const ports=[];
  const port=(name,sender)=>{let closed=false;const p={name,sender,onMessage:event(),onDisconnect:event(),postMessage:vi.fn(),disconnect:vi.fn(()=>{if(closed)return;closed=true;void p.onDisconnect.emit();})};ports.push(p);return p;};
@@ -113,7 +114,7 @@ it('authenticated resize accepts only boolean advanced presentation and cannot d
 async function directFixture(){
  const f=fixture();cleanups.push(f.dispose);
  f.api.runtime.sendMessage.mockImplementation(async(_peer,request)=>{
-  if(request.action==='inspect')return {success:true,context:{...context(),directEnabled:true}};
+  if(isInspect(request))return {success:true,context:{...context(),directEnabled:true}};
   if(request.action==='directPrepare')return {success:true,authorization:NONCE,expiresInMs:15000};
   if(request.action==='directRevoke')return {success:true,revoked:true};
   if(request.action==='directPlace')return {success:true,phase:'committed',tabId:3,windowId:10,spaceId:'a',focused:true,controllerClosed:true};
@@ -152,16 +153,16 @@ it.each(['wrongWindow','wrongFolder','noOptIn','fullscreen','oldDocument','inact
 });
 it.each(['closedWindow','deletedSpace','reboundFolder','renamedSpace','disabledMode'])('fresh inspect rejects %s without silent substitute',async kind=>{
  const f=await directFixture(),send=f.api.runtime.sendMessage.getMockImplementation();
- f.api.runtime.sendMessage.mockImplementation(async(peer,r)=>{if(r.action!=='inspect')return send(peer,r);const c={...context(),directEnabled:true};if(kind==='closedWindow'){c.windows=[];c.proposed=null;}if(kind==='deletedSpace'){c.spaces=[];c.proposed=null;}if(kind==='reboundFolder'){c.spaces[0].bookmarkFolderId='new';c.proposed=null;}if(kind==='renamedSpace')c.spaces[0].name='New';if(kind==='disabledMode')c.directEnabled=false;return {success:true,context:c};});
+ f.api.runtime.sendMessage.mockImplementation(async(peer,r)=>{if(!isInspect(r))return send(peer,r);const c={...context(),directEnabled:true};if(kind==='closedWindow'){c.windows=[];c.proposed=null;}if(kind==='deletedSpace'){c.spaces=[];c.proposed=null;}if(kind==='reboundFolder'){c.spaces[0].bookmarkFolderId='new';c.proposed=null;}if(kind==='renamedSpace')c.spaces[0].name='New';if(kind==='disabledMode')c.directEnabled=false;return {success:true,context:c};});
  await f.frame.onMessage.emit({kind:'placeDirect',target:context().proposed});
  expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='directPrepare'||r.action==='directPlace')).toBe(false);
 });
 it('synchronous intake claim discards a concurrent duplicate even when first validation fails',async()=>{
  const f=await directFixture(),send=f.api.runtime.sendMessage.getMockImplementation();let release;
- f.api.runtime.sendMessage.mockImplementation((peer,r)=>r.action==='inspect'?new Promise(resolve=>release=resolve):send(peer,r));
+ f.api.runtime.sendMessage.mockImplementation((peer,r)=>isInspect(r)?new Promise(resolve=>release=resolve):send(peer,r));
  const first=f.frame.onMessage.emit({kind:'placeDirect',target:context().proposed});const duplicate=f.frame.onMessage.emit({kind:'placeDirect',target:context().proposed});await flush();
  release({success:false});await first;await duplicate;
- expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='inspect')).toHaveLength(2);
+ expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>isInspect(r))).toHaveLength(2);
  expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='directPlace')).toBe(false);
 });
 it.each(['cancelDirect','refresh','navigation'])('queued %s invalidates awaited authorization before dispatch',async kind=>{
@@ -253,7 +254,7 @@ it.each(['pairing','cancel'])('proven %s change before send releases only its ow
 });
 it('changed source during fresh inspect never authorizes',async()=>{
  const f=await directFixture(),send=f.api.runtime.sendMessage.getMockImplementation();
- f.api.runtime.sendMessage.mockImplementation(async(peer,r)=>{const result=await send(peer,r);if(r.action==='inspect')f.source.url='https://new.test';return result;});
+ f.api.runtime.sendMessage.mockImplementation(async(peer,r)=>{const result=await send(peer,r);if(isInspect(r))f.source.url='https://new.test';return result;});
  await f.frame.onMessage.emit({kind:'placeDirect',target:context().proposed});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='directPrepare')).toBe(false);
 });
 it('ResizeObserver measures natural header height after status and More changes',async()=>{
@@ -295,7 +296,7 @@ it('dismissal remains scoped to current session and cannot contain destination o
  const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);
  await top.onMessage.emit({kind:'dismissPicker',target:context().proposed});expect(top.disconnect).toHaveBeenCalled();
  expect(frame.postMessage.mock.calls.some(([m])=>m.kind==='dismissPicker')).toBe(false);
- expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action!=='inspect')).toBe(false);
+ expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>!isInspect(r))).toBe(false);
 });
 it('old top session cannot dismiss a replacement header',async()=>{
  const f=fixture();cleanups.push(f.dispose);const old=await f.mount();await f.bind(old);const next=await f.mount(),frame=await f.bind(next);
@@ -340,7 +341,7 @@ it('hit regions require exact bounded numeric geometry and never affect authoriz
  const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top),rects=[[0,0,1000,44],[650,50,350,100]];
  await frame.onMessage.emit({kind:'hitRegions',rects});expect(top.postMessage).toHaveBeenCalledWith({kind:'hitRegions',rects});
  for(const rects of [[[0,0,1,481]],[[0,0,'url(evil)',1]],[[0,-1,1,1]],Array(6).fill([0,0,1,1])]){const before=top.postMessage.mock.calls.length;await frame.onMessage.emit({kind:'hitRegions',rects});expect(top.postMessage.mock.calls.length).toBe(before);}
- expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action!=='inspect')).toBe(false);
+ expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>!isInspect(r))).toBe(false);
 });
 
 it('capture scroll recomputes hit regions without height change and disposal removes listener',async()=>{
@@ -353,7 +354,7 @@ it('scheme forwarding is bounded, current-frame only and cannot carry placement'
  const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);
  await frame.onMessage.emit({kind:'colorScheme',mode:'dark'});expect(top.postMessage).toHaveBeenCalledWith({kind:'colorScheme',mode:'dark'});
  const n=top.postMessage.mock.calls.length;await frame.onMessage.emit({kind:'colorScheme',mode:'light;display:none'});await frame.onMessage.emit({kind:'colorScheme',mode:'light',target:context().proposed});expect(top.postMessage.mock.calls.length).toBe(n);
- expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action!=='inspect')).toBe(false);
+ expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>!isInspect(r))).toBe(false);
 });
 
 it('System mode uses authenticated top preference, not iframe scheme feedback',async()=>{
@@ -365,7 +366,7 @@ it('System mode uses authenticated top preference, not iframe scheme feedback',a
 });
 it('system preference is scoped to current top port and has no transfer authority',async()=>{
  const f=fixture();cleanups.push(f.dispose);const top=await f.mount();await top.onMessage.emit({kind:'systemScheme',mode:'dark'});const frame=await f.bind(top);expect(frame.postMessage).toHaveBeenCalledWith({kind:'systemScheme',mode:'dark'});
- await top.onMessage.emit({kind:'systemScheme',mode:'light'});expect(frame.postMessage).toHaveBeenCalledWith({kind:'systemScheme',mode:'light'});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action!=='inspect')).toBe(false);
+ await top.onMessage.emit({kind:'systemScheme',mode:'light'});expect(frame.postMessage).toHaveBeenCalledWith({kind:'systemScheme',mode:'light'});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>!isInspect(r))).toBe(false);
 });
 
 it('caret focuses search without scrolling the still-short iframe or granting placement',async()=>{
@@ -375,7 +376,7 @@ it('caret focuses search without scrolling the still-short iframe or granting pl
 });
 it('settings refreshes its expired view, and only explicit refresh permits a later successful open',async()=>{
  const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());const fresh={...context(),viewId:'22222222-2222-4222-8222-222222222222'};
- f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:fresh}:{success:true,reviewReady:true});
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>isInspect(r)?{success:true,context:fresh}:{success:true,reviewReady:true});
  await frame.onMessage.emit({kind:'sizeSettings'});await frame.onMessage.emit({kind:'sizeSettings'});
  let settings=f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings');expect(settings).toHaveLength(1);expect(settings[0][1]).toMatchObject({viewId:fresh.viewId,source:{tabId:3,windowId:20,url:'https://page.test/'}});
  await frame.onMessage.emit({kind:'refresh'});await frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
@@ -386,7 +387,7 @@ it('uncertain settings dispatch remains blocked after manual refresh',async()=>{
 });
 for(const cause of ['failed','malformed','navigation','revision','duplicate'])it(`settings fresh inspect fences ${cause}`,async()=>{
  const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);let finish;
- f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?new Promise(resolve=>finish=resolve):{success:true,reviewReady:true});
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>isInspect(r)?new Promise(resolve=>finish=resolve):{success:true,reviewReady:true});
  const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
  if(cause==='navigation'){f.source.url='https://changed.test/';await f.api.tabs.onUpdated.emit(3,{url:f.source.url});}
  if(cause==='revision')void frame.onMessage.emit({kind:'cancelDirect'});
@@ -403,7 +404,7 @@ it('settings context preserves explicit root selection and placement lock while 
 });
 async function recoveryFixture(){
  const f=fixture();cleanups.push(f.dispose);const missing={...context(),directEnabled:false,controlsMissing:true};
- f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:missing}:{success:true,reviewReady:true});
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>isInspect(r)?{success:true,context:missing}:{success:true,reviewReady:true});
  const top=f.top();top.sender.documentId='source-document';await f.api.runtime.onConnect.emit(top);await top.onMessage.emit({kind:'hello'});const frame=await f.bind(top);
  const challenge=top.postMessage.mock.calls.find(([m])=>m.kind==='mount')[0].challenge;f.api.tabs.sendMessage.mockResolvedValue({challenge,url:f.source.url,safe:true});
  const authority=(r,stage,patch={})=>new Promise(resolve=>f.api.runtime.onMessageExternal.emit({type:'littleArcControlsRecoveryAuthority',stage,source:r.source,viewId:r.viewId,connection:r.connection,requestId:r.requestId,...patch},{id:PEER,url:`chrome-extension://${PEER}/background.js`},resolve));
@@ -411,11 +412,11 @@ async function recoveryFixture(){
 }
 it('missing controller remains readonly until explicit settings recovers once with two one-use document proofs',async()=>{
  const f=await recoveryFixture();await f.frame.onMessage.emit({kind:'refresh'});expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='recoverControls')).toBe(false);
- f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};expect(r.action).toBe('recoverControls');expect(await f.authority(r,'commit')).toEqual({authorized:false});expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'prepare')).toEqual({authorized:false});expect(await f.authority(r,'commit')).toEqual({authorized:true});return {success:true,reviewReady:true};});
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(isInspect(r))return {success:true,context:f.missing};expect(r.action).toBe('recoverControls');expect(await f.authority(r,'commit')).toEqual({authorized:false});expect(await f.authority(r,'prepare')).toEqual({authorized:true});expect(await f.authority(r,'prepare')).toEqual({authorized:false});expect(await f.authority(r,'commit')).toEqual({authorized:true});return {success:true,reviewReady:true};});
  await f.frame.onMessage.emit({kind:'sizeSettings'});await f.frame.onMessage.emit({kind:'sizeSettings'});expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='recoverControls')).toHaveLength(1);expect(f.api.runtime.sendMessage.mock.calls.some(([,r])=>r.action==='settings')).toBe(false);expect(f.api.tabs.sendMessage).toHaveBeenCalledWith(3,{type:'littleArcHeaderLiveProbe'},{frameId:0,documentId:'source-document'});
 });
 for(const cause of ['lostReply','missingProof','navigation','wrongPayload','changedPair'])it(`recovery ${cause} never replays after refresh`,async()=>{
- const f=await recoveryFixture();f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:f.missing};
+ const f=await recoveryFixture();f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(isInspect(r))return {success:true,context:f.missing};
  if(cause==='missingProof')return {success:true,reviewReady:true};
  if(cause==='navigation'){await f.api.tabs.onUpdated.emit(3,{status:'loading'});expect(await f.authority(r,'prepare')).toEqual({authorized:false});}
  else if(cause==='wrongPayload')expect(await f.authority(r,'prepare',{viewId:'22222222-2222-4222-8222-222222222222'})).toEqual({authorized:false});
@@ -429,7 +430,7 @@ it('invalid missing-controller metadata cannot enable placement',()=>{for(const 
 it.each(['beforeReply','afterReply'])('source return %s refreshes only choices and permits a new settings intent',async ordering=>{
  const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());let finish;
  // Start with an ordinary view so this operation is settings, not recovery.
- f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>r.action==='inspect'?{success:true,context:context()}:new Promise(resolve=>finish=resolve));
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>isInspect(r)?{success:true,context:context()}:new Promise(resolve=>finish=resolve));
  const work=frame.onMessage.emit({kind:'sizeSettings'});await flush();expect(finish).toBeTypeOf('function');
  if(ordering==='beforeReply')await f.api.tabs.onActivated.emit({tabId:3,windowId:20});
  finish({success:true,reviewReady:true});await work;
@@ -437,9 +438,98 @@ it.each(['beforeReply','afterReply'])('source return %s refreshes only choices a
  expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);
  const again=frame.onMessage.emit({kind:'sizeSettings'});await flush();finish({success:true,reviewReady:true});await again;expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(2);
 });
-it('source focus after uncertain settings never clears dispatch lock or retries',async()=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(r.action==='inspect')return {success:true,context:context()};throw Error('lost');});await frame.onMessage.emit({kind:'sizeSettings'});const calls=f.api.runtime.sendMessage.mock.calls.length;await f.api.windows.onFocusChanged.emit(20);await flush();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(calls);expect(f.broker.sessions.get(3).settingsDispatched).toBe(true);});
+it('source focus after uncertain settings never clears dispatch lock or retries',async()=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{if(isInspect(r))return {success:true,context:context()};throw Error('lost');});await frame.onMessage.emit({kind:'sizeSettings'});const calls=f.api.runtime.sendMessage.mock.calls.length;await f.api.windows.onFocusChanged.emit(20);await flush();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(calls);expect(f.broker.sessions.get(3).settingsDispatched).toBe(true);});
 it.each(['navigation','move'])('source %s during return inspect cannot restore stale controls',async cause=>{const f=fixture();cleanups.push(f.dispose);const frame=await f.bind(await f.mount());await frame.onMessage.emit({kind:'sizeSettings'});const before=frame.postMessage.mock.calls.filter(([m])=>m.kind==='context').length;let finish;f.api.runtime.sendMessage.mockImplementation(()=>new Promise(resolve=>finish=resolve));await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();expect(finish).toBeTypeOf('function');if(cause==='navigation')await f.api.tabs.onUpdated.emit(3,{status:'loading'});else await f.api.tabs.onDetached.emit(3);finish({success:true,context:context()});await flush();expect(frame.postMessage.mock.calls.filter(([m])=>m.kind==='context')).toHaveLength(before);expect(frame.disconnect).toHaveBeenCalled();});
 async function closureFixture(){const f=fixture();cleanups.push(f.dispose);const top=await f.mount(),frame=await f.bind(top);const challenge=top.postMessage.mock.calls.find(([m])=>m.kind==='mount')[0].challenge;f.api.tabs.sendMessage.mockResolvedValue({challenge,url:f.source.url,safe:true});await frame.onMessage.emit({kind:'sizeSettings'});const notify=(patch={},sender={id:PEER,url:`chrome-extension://${PEER}/background.js`})=>new Promise(resolve=>f.api.runtime.onMessageExternal.emit({type:'littleArcControlsClosed',version:1,generation:'g',source:{tabId:3,windowId:20,url:f.source.url},...patch},sender,resolve));return {...f,top,frame,notify};}
-it.each(['afterFailure','duringFailure'])('closure proof %s refreshes choices without replaying settings',async ordering=>{const f=await closureFixture();let finish,count=0;f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{expect(r.action).toBe('inspect');if(++count===1)return new Promise(resolve=>finish=resolve);return {success:true,context:{...context(),directEnabled:false,controlsMissing:true}};});await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();if(ordering==='duringFailure')expect(await f.notify()).toEqual({accepted:true});finish({success:false});await flush();if(ordering==='afterFailure')expect(await f.notify()).toEqual({accepted:true});await flush();expect(f.frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({kind:'context',context:expect.objectContaining({controlsMissing:true})}));expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);});
+it.each(['afterFailure','duringFailure'])('closure proof %s refreshes choices without replaying settings',async ordering=>{const f=await closureFixture();let finish,count=0;f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{expect(isInspect(r)).toBe(true);if(++count===1)return new Promise(resolve=>finish=resolve);return {success:true,context:{...context(),directEnabled:false,controlsMissing:true}};});await f.api.tabs.onActivated.emit({tabId:3,windowId:20});await flush();if(ordering==='duringFailure')expect(await f.notify()).toEqual({accepted:true});finish({success:false});await flush();if(ordering==='afterFailure')expect(await f.notify()).toEqual({accepted:true});await flush();expect(f.frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({kind:'context',context:expect.objectContaining({controlsMissing:true})}));expect(f.broker.sessions.get(3).settingsUsed).toBe(false);expect(f.api.runtime.sendMessage.mock.calls.filter(([,r])=>r.action==='settings')).toHaveLength(1);});
 it.each(['generation','peer','source','version','extra'])('closure notification rejects %s without reads',async cause=>{const f=await closureFixture(),patch={},sender={id:PEER};if(cause==='generation')patch.generation='wrong';if(cause==='peer')sender.id=SELF;if(cause==='source')patch.source={tabId:3,windowId:99,url:f.source.url};if(cause==='version')patch.version=2;if(cause==='extra')patch.extra=true;const before=f.api.runtime.sendMessage.mock.calls.length;expect(await f.notify(patch,sender)).toEqual({accepted:false});expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(before);});
 it('closure proof cannot unlock uncertain settings dispatch',async()=>{const f=await closureFixture();const s=f.broker.sessions.get(3);s.settingsDispatched=true;const before=f.api.runtime.sendMessage.mock.calls.length;await f.notify();expect(f.api.runtime.sendMessage).toHaveBeenCalledTimes(before);expect(s.settingsDispatched).toBe(true);});
+
+it('old Arcify explicitly declines icon inspect, so updated Spotlight uses exact legacy read-only shape and caches the fallback for the session',async()=>{
+ const f=fixture();cleanups.push(f.dispose);
+ f.api.runtime.sendMessage.mockImplementation(async(_peer,r)=>{
+  if(r.action===HEADER_ICON_INSPECT)return {success:false,code:'INVALID_REQUEST',error:'Invalid header request.'};
+  if(r.action==='inspect')return {success:true,context:context()};
+  throw Error('Unexpected operation');
+ });
+ const frame=await f.bind(await f.mount());await frame.onMessage.emit({kind:'refresh'});
+ const calls=f.api.runtime.sendMessage.mock.calls.map(([,r])=>r);
+ expect(calls.map(r=>r.action)).toEqual([HEADER_ICON_INSPECT,'inspect','inspect']);
+ for(const r of calls)expect(Object.keys(r).sort()).toEqual(['action','source','type']);
+ expect(frame.postMessage).toHaveBeenCalledWith({kind:'context',context:{...context(),siteHostname:'page.test'}});
+});
+it.each(['transport','unauthorized','malformed','changedPair'])('does not downgrade icon inspect on %s',async cause=>{
+ const f=fixture();cleanups.push(f.dispose);
+ f.api.runtime.sendMessage.mockImplementation(async()=>{
+  if(cause==='transport')throw Error('Disconnected');
+  if(cause==='unauthorized')return {success:false,code:'UNAUTHORIZED',error:'Little Arc pairing changed.'};
+  if(cause==='malformed')return {success:true,context:{...context(),unknown:true}};
+  f.storage.arcifyBridgePairingGeneration='changed';
+  return {success:false,code:'INVALID_REQUEST',error:'Invalid header request.'};
+ });
+ const top=await f.mount();
+ expect(top.postMessage.mock.calls.some(([m])=>m.kind==='mount')).toBe(false);
+ expect(f.api.runtime.sendMessage.mock.calls.map(([,r])=>r.action)).toEqual([HEADER_ICON_INSPECT]);
+});
+it('validates a single bounded emoji and ignores malformed decoration without weakening target validation',()=>{
+ const value=context();value.themeMode='dark';value.siteHostname='page.test';value.spaces[0].color='#aabbcc';
+ for(const icon of ['👩🏽‍💻','🏠','🇵🇱','7️⃣']){value.spaces[0].icon=icon;expect(validateHeaderContext(value)).toBe(value);}
+ for(const icon of ['<img src=x>', '🏠🚀','7','work','x'.repeat(100),null,{glyph:'🏠'}]){
+  value.spaces[0].icon=icon;const sanitized=validateHeaderContext(value);
+  expect(sanitized.spaces[0]).toEqual({id:'a',bookmarkFolderId:'fa',name:'Home',color:'#aabbcc'});
+  expect(sanitized.proposed).toEqual(context().proposed);
+ }
+ value.proposed.bookmarkFolderId='wrong';expect(()=>validateHeaderContext(value)).toThrow();
+ value.proposed.bookmarkFolderId='fa';value.spaces[0].targetWindow=40;expect(()=>validateHeaderContext(value)).toThrow();
+});
+it('renders only decorative text beside the destination name and preserves focused keyboard selection',async()=>{
+ const c=context();c.spaces[0].icon='🏠';c.spaces[0].color='#bbccdd';c.spaces.push({id:'b',bookmarkFolderId:'fb',name:'Work',icon:'👩🏽‍💻'},{id:'x',bookmarkFolderId:'fx',name:'Plain',icon:'<img src=x>'});
+ const f=await compactFixture(c);f.click('space-menu-toggle');const row=id=>document.getElementById('space-option-'+id);
+ expect(row(0).querySelector('.space-icon')?.textContent).toBe('🏠');
+ expect(row(0).querySelector('.space-icon')?.getAttribute('aria-hidden')).toBe('true');
+ expect(row(0).querySelector('.space-icon')?.style.getPropertyValue('--space-icon-tint')).toBe('#bbccdd');
+ expect(row(1).querySelector('.space-icon')?.textContent).toBe('👩🏽‍💻');
+ expect(row(2).querySelector('.space-dot')).not.toBeNull();expect(row(2).querySelector('img')).toBeNull();
+ const key=key=>f.handlers.get('space-search:keydown')({isTrusted:true,key,preventDefault(){},stopPropagation(){}});
+ key('ArrowDown');expect(document.getElementById('space-search').getAttribute('aria-activedescendant')).toBe('space-option-1');key('Enter');
+ expect(document.getElementById('space').value).toBe('b');expect(document.activeElement.id).toBe('space-menu-toggle');
+ expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
+});
+
+
+it('names each Space option from only its own current label, including after filtering and selection',async()=>{
+ const literal='<img src=x> & Research';
+ const c=context();c.spaces[0].icon='🏠';c.spaces.push({id:'b',bookmarkFolderId:'fb',name:literal});
+ const f=await compactFixture(c);f.click('space-menu-toggle');
+ const search=document.getElementById('space-search');
+ const assertOption=(index,name,selected,marker)=>{
+  const id='space-option-'+index,row=document.getElementById(id);
+  expect(row.getAttribute('role')).toBe('option');
+  expect(row.getAttribute('aria-selected')).toBe(String(selected));
+  const labelId=row.getAttribute('aria-labelledby'),label=document.getElementById(labelId);
+  expect(labelId).toBe(id+'-label');
+  expect(document.querySelectorAll('#'+labelId)).toHaveLength(1);
+  expect(label.parentElement).toBe(row);
+  expect(label.textContent).toBe(name);
+  expect(label.children).toHaveLength(0);
+  expect(row.querySelector(marker)?.getAttribute('aria-hidden')).toBe('true');
+  return label;
+ };
+ const oldLabel=assertOption(0,'Home',true,'.space-icon');
+ const oldFallback=assertOption(1,literal,false,'.space-dot');
+ search.value='Research';f.handlers.get('space-search:input')();
+ expect(oldLabel.isConnected).toBe(false);expect(oldFallback.isConnected).toBe(false);
+ expect(document.getElementById('space-option-1-label')).toBeNull();
+ expect(search.getAttribute('aria-activedescendant')).toBe('space-option-0');
+ assertOption(0,literal,false,'.space-dot');
+ search.value='missing';f.handlers.get('space-search:input')();
+ expect(document.getElementById('space-option-0-label')).toBeNull();
+ expect(search.hasAttribute('aria-activedescendant')).toBe(false);
+ search.value='Research';f.handlers.get('space-search:input')();
+ f.handlers.get('space-search:keydown')({isTrusted:true,key:'Enter',preventDefault(){},stopPropagation(){}});
+ expect(document.getElementById('space').value).toBe('b');
+ f.click('space-menu-toggle');
+ assertOption(0,'Home',false,'.space-icon');
+ assertOption(1,literal,true,'.space-dot');
+ expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
+});

@@ -20,3 +20,6 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline-color:var(
 #status:not([hidden]){background:var(--la-panel,#ffffff);border-color:var(--la-border,#888888);color:var(--la-panelText,#16191f)}
 
 html{color-scheme:light}body{color-scheme:inherit}
+
+/* Configured destination glyphs do not replace the accessible Space name. */
+.space-icon{display:inline-grid;place-items:center;width:20px;height:20px;flex:0 0 20px;border-radius:5px;font-size:13px;line-height:1;background:var(--la-secondary,#f5f5f5);background:color-mix(in srgb,var(--space-icon-tint) 24%,var(--la-panel,#ffffff))}
