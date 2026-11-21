@@ -9,3 +9,9 @@ Authenticated bounded numeric hit regions clip the frame's transparent surroundi
 Limitations: clicks inside unrelated cross-origin child frames do not bubble into the top document, and a host page can interfere with event delivery or cover extension UI. This is a page-hosted overlay, not browser chrome. Escape and a header click remain available. Dismissal provides no new anti-clickjacking guarantee. Existing exact destination validation, one-use fresh placement authorization, duplicate suppression and uncertain-dispatch lock remain unchanged.
 
 Validation records in the local candidate distinguish native synthetic-profile tests from unverified restart/interruption, BFCache/prerender, hostile presentation and media-history cases. Reload both paired extensions after delivery; do not uninstall or clear storage. Existing source pages may need one reload after extension-context invalidation.
+
+## Destination Space icons
+
+The Little Arc chooser shows a configured preset or single emoji beside the Space name, on a small background tinted by its destination. The glyph is decorative and hidden from assistive technology; the original name, keyboard selection and exact destination IDs are unchanged. Missing or malformed glyphs keep the existing colored dot.
+
+Spotlight asks the already-paired Arcify worker for the icon-aware read-only inspection. It tries the legacy inspection only after that worker explicitly rejects the new action as unsupported, and remembers the fallback for the current header session. Transport, pairing or other validation failures do not trigger a downgrade or replay. The original inspection and placement protocol remain unchanged for older Spotlight.
