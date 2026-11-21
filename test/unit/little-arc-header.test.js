@@ -495,3 +495,41 @@ it('renders only decorative text beside the destination name and preserves focus
  expect(document.getElementById('space').value).toBe('b');expect(document.activeElement.id).toBe('space-menu-toggle');
  expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
 });
+
+
+it('names each Space option from only its own current label, including after filtering and selection',async()=>{
+ const literal='<img src=x> & Research';
+ const c=context();c.spaces[0].icon='🏠';c.spaces.push({id:'b',bookmarkFolderId:'fb',name:literal});
+ const f=await compactFixture(c);f.click('space-menu-toggle');
+ const search=document.getElementById('space-search');
+ const assertOption=(index,name,selected,marker)=>{
+  const id='space-option-'+index,row=document.getElementById(id);
+  expect(row.getAttribute('role')).toBe('option');
+  expect(row.getAttribute('aria-selected')).toBe(String(selected));
+  const labelId=row.getAttribute('aria-labelledby'),label=document.getElementById(labelId);
+  expect(labelId).toBe(id+'-label');
+  expect(document.querySelectorAll('#'+labelId)).toHaveLength(1);
+  expect(label.parentElement).toBe(row);
+  expect(label.textContent).toBe(name);
+  expect(label.children).toHaveLength(0);
+  expect(row.querySelector(marker)?.getAttribute('aria-hidden')).toBe('true');
+  return label;
+ };
+ const oldLabel=assertOption(0,'Home',true,'.space-icon');
+ const oldFallback=assertOption(1,literal,false,'.space-dot');
+ search.value='Research';f.handlers.get('space-search:input')();
+ expect(oldLabel.isConnected).toBe(false);expect(oldFallback.isConnected).toBe(false);
+ expect(document.getElementById('space-option-1-label')).toBeNull();
+ expect(search.getAttribute('aria-activedescendant')).toBe('space-option-0');
+ assertOption(0,literal,false,'.space-dot');
+ search.value='missing';f.handlers.get('space-search:input')();
+ expect(document.getElementById('space-option-0-label')).toBeNull();
+ expect(search.hasAttribute('aria-activedescendant')).toBe(false);
+ search.value='Research';f.handlers.get('space-search:input')();
+ f.handlers.get('space-search:keydown')({isTrusted:true,key:'Enter',preventDefault(){},stopPropagation(){}});
+ expect(document.getElementById('space').value).toBe('b');
+ f.click('space-menu-toggle');
+ assertOption(0,'Home',false,'.space-icon');
+ assertOption(1,literal,true,'.space-dot');
+ expect(f.frame.postMessage.mock.calls.some(([m])=>['review','placeDirect'].includes(m.kind))).toBe(false);
+});
