@@ -143,3 +143,114 @@ it('initial admission still rejects inactive destination and hidden source offer
 it('visible background programmatic element focus does not dismiss the dim',async()=>{const f=contentFixture();await f.mount();f.listeners.get('focus')({type:'focus',isTrusted:true});expect(document.body.children.length).toBe(1);});
 it.each(['stable','expired'])('twice-unstable focus observations never renew; next pulse %s',async outcome=>{const f=fixture(),{p,id}=await f.bind();const releases=[];let count=0;f.api.windows.get.mockImplementation(async windowId=>{if(windowId===10&&++count<=2)return new Promise(resolve=>releases.push(()=>resolve({...f.windows[10]})));return {...f.windows[windowId]};});const pending=p.onMessage.emit({kind:'pulse',id});await f.api.windows.onFocusChanged.emit(99);releases[0]();for(let i=0;i<20;i++)await Promise.resolve();expect(releases).toHaveLength(2);await f.api.windows.onFocusChanged.emit(-1);releases[1]();await pending;expect(p.postMessage).toHaveBeenCalledTimes(1);expect(p.disconnect).not.toHaveBeenCalled();if(outcome==='expired')vi.setSystemTime(Date.now()+4001);await p.onMessage.emit({kind:'pulse',id});if(outcome==='stable'){expect(p.postMessage).toHaveBeenCalledTimes(2);expect(p.disconnect).not.toHaveBeenCalled();}else{expect(p.postMessage).toHaveBeenCalledTimes(1);expect(p.disconnect).toHaveBeenCalled();}});
 it('hidden document focus flag is not source return until visible focus is confirmed',async()=>{const f=contentFixture(),{p,id}=await f.mount();f.hide();f.focus();document.dispatchEvent(new Event('visibilitychange'));await p.onMessage.emit({kind:'lease',id,ms:4000,strength:55});await vi.advanceTimersByTimeAsync(1500);expect(document.body.children.length).toBe(1);expect(p.postMessage).toHaveBeenCalledWith({kind:'pulse',id});f.show();document.dispatchEvent(new Event('visibilitychange'));expect(document.body.children.length).toBe(0);});
+
+it('a timely admitted source must not lose dimming merely because the next normal pulse overlaps pending validation',async()=>{
+    const f=fixture(),{p,id}=await f.bind();
+    await vi.advanceTimersByTimeAsync(1500);
+    let finish;
+    f.api.tabs.get.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    const first=p.onMessage.emit({kind:'pulse',id});
+    await vi.advanceTimersByTimeAsync(1500);
+    await p.onMessage.emit({kind:'pulse',id});
+    const disconnectedDuringUnfinishedRead=p.disconnect.mock.calls.length>0;
+    const messagesDuringUnfinishedRead=p.postMessage.mock.calls.length;
+    finish({...f.tabs[1]});await first;
+    expect(messagesDuringUnfinishedRead).toBe(1); // Overlap must not itself renew.
+    expect(disconnectedDuringUnfinishedRead).toBe(false);
+    expect(p.postMessage).toHaveBeenCalledTimes(2); // Only authoritative first read can renew.
+});
+
+it.each(['wrong-id','extra-field','duplicate-bind','held-deadline','source-focus','target-close'])(
+    'an overlapping pulse cannot mask %s or resurrect a cleared lease',async cause=>{
+        const f=fixture(),{p,id}=await f.bind();
+        await vi.advanceTimersByTimeAsync(1500);
+        let finish;
+        f.api.tabs.get.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+        const pending=p.onMessage.emit({kind:'pulse',id});
+        await vi.advanceTimersByTimeAsync(1500);
+        const reads=f.api.tabs.get.mock.calls.length;
+        if(cause==='wrong-id') await p.onMessage.emit({kind:'pulse',id:'not-the-current-lease'});
+        if(cause==='extra-field') await p.onMessage.emit({kind:'pulse',id,extra:true});
+        if(cause==='duplicate-bind') await p.onMessage.emit({kind:'bind',id});
+        if(cause==='held-deadline') {
+            await p.onMessage.emit({kind:'pulse',id});
+            expect(f.api.tabs.get.mock.calls).toHaveLength(reads);
+            expect(p.disconnect).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1000);
+        }
+        if(cause==='source-focus') {
+            await p.onMessage.emit({kind:'pulse',id});
+            expect(f.api.tabs.get.mock.calls).toHaveLength(reads);
+            f.windows[10].focused=true;
+            await f.api.windows.onFocusChanged.emit(10);
+        }
+        if(cause==='target-close') {
+            await p.onMessage.emit({kind:'pulse',id});
+            expect(f.api.tabs.get.mock.calls).toHaveLength(reads);
+            await f.api.windows.onRemoved.emit(20);
+        }
+        expect(p.disconnect).toHaveBeenCalledTimes(1);
+        finish({...f.tabs[1]});await pending;
+        expect(p.postMessage).toHaveBeenCalledTimes(1);
+    });
+
+it('overlapping bind before the first lease acknowledgment remains a protocol failure',async()=>{
+    const f=fixture();
+    await f.start();const p=f.port(),id=f.api.tabs.sendMessage.mock.calls.at(-1)[1].id;
+    await f.api.runtime.onConnect.emit(p);
+    let finish;
+    f.api.tabs.get.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    const pending=p.onMessage.emit({kind:'bind',id});
+    await p.onMessage.emit({kind:'bind',id});
+    expect(p.disconnect).toHaveBeenCalledTimes(1);
+    finish({...f.tabs[1]});await pending;
+    expect(p.postMessage).not.toHaveBeenCalled();
+});
+
+it.each(['navigation','replacement','same-url-reload'])(
+    'a held overlapping renewal cannot survive %s or affect the new exact document lease',async cause=>{
+        const f=fixture(),old=await f.bind();
+        await vi.advanceTimersByTimeAsync(1500);
+        let finish;
+        f.api.tabs.get.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+        const pending=old.p.onMessage.emit({kind:'pulse',id:old.id});
+        await vi.advanceTimersByTimeAsync(1500);
+        const reads=f.api.tabs.get.mock.calls.length;
+        await old.p.onMessage.emit({kind:'pulse',id:old.id});
+        expect(f.api.tabs.get.mock.calls).toHaveLength(reads);
+        expect(old.p.disconnect).not.toHaveBeenCalled();
+        expect(old.p.postMessage).toHaveBeenCalledTimes(1);
+
+        // These are the broker's actual native events. The mocked read still
+        // holds the old document, but revocation must not wait for it.
+        if(cause==='replacement') await f.api.tabs.onReplaced.emit(4,1);
+        if(cause==='navigation') {
+            f.tabs[1].url='https://source.test/new';
+            await f.api.tabs.onUpdated.emit(1,{url:f.tabs[1].url});
+        }
+        if(cause==='same-url-reload') await f.api.tabs.onUpdated.emit(1,{status:'loading'});
+        expect(old.p.disconnect).toHaveBeenCalledTimes(1);
+
+        // For the Chrome replacement case, the next launch uses the new native
+        // tab ID. Same-tab navigation/reload instead uses a new document ID.
+        const nextId=cause==='replacement'?4:1;
+        f.tabs[nextId]={...f.tabs[1],id:nextId};
+        if(nextId!==1)delete f.tabs[1];
+        const nextSource={...source,tabId:nextId,url:f.tabs[nextId].url};
+        await f.manager.start(nextSource,'fresh-doc',target,pair);
+        const next=f.port();next.sender.tab.id=nextId;next.sender.documentId='fresh-doc';
+        const nextToken=f.api.tabs.sendMessage.mock.calls.at(-1)[1].id;
+        expect(nextToken).not.toBe(old.id);
+        await f.api.runtime.onConnect.emit(next);
+        await next.onMessage.emit({kind:'bind',id:nextToken});
+        expect(next.postMessage).toHaveBeenCalledTimes(1);
+
+        finish({id:1,windowId:10,url:source.url,active:true});await pending;
+        await old.p.onDisconnect.emit();
+        expect(old.p.postMessage).toHaveBeenCalledTimes(1);
+        expect(next.disconnect).not.toHaveBeenCalled();
+        expect(next.postMessage).toHaveBeenCalledTimes(1);
+        await next.onMessage.emit({kind:'pulse',id:nextToken});
+        expect(next.postMessage).toHaveBeenCalledTimes(2);
+        expect(next.postMessage.mock.calls[1][0].id).toBe(nextToken);
+    });

@@ -66,8 +66,14 @@ export function createSourceDimming(api, { now = Date.now } = {}) {
         port.onDisconnect.addListener(() => clear(lease));
         let bound = false, checking = false;
         port.onMessage.addListener(async message => {
-            if (checking || !message || Object.keys(message).length !== 2 || message.id !== lease.id
+            if (!message || Object.keys(message).length !== 2 || message.id !== lease.id
                 || message.kind !== (bound ? 'pulse' : 'bind')) return clear(lease);
+            if (checking) {
+                // Drop only an overlapping normal pulse for the live bound lease.
+                // The in-flight read is still the sole authority to renew it.
+                if (bound && leases.get(lease.source.tabId) === lease && now() < lease.renewBy && now() < lease.expires) return;
+                return clear(lease);
+            }
             checking = true;
             try {
                 const live = await valid(lease, !bound);
